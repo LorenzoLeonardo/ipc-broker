@@ -160,7 +160,7 @@ async fn handle_request(
             send_to_client(clients, client_id, resp).await;
         }
 
-        RpcRequest::Publish { topic, payload } => {
+        RpcRequest::Publish { topic, args } => {
             let subs_list = {
                 let subs = subs.lock().await;
                 subs.get(&topic)
@@ -171,7 +171,7 @@ async fn handle_request(
             if !subs_list.is_empty() {
                 let event = RpcResponse::Event {
                     topic: topic.clone(),
-                    payload: payload.clone(),
+                    args: args.clone(),
                 };
                 let bytes = serde_json::to_vec(&event).unwrap();
                 let clients_guard = clients.lock().await;

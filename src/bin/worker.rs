@@ -1,3 +1,4 @@
+use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
@@ -54,11 +55,15 @@ async fn main() -> std::io::Result<()> {
                     let resp = match method.as_str() {
                         "add" => RpcResponse::Result {
                             call_id,
-                            value: args[0] + args[1],
+                            value: (args.get(0).and_then(Value::as_i64).unwrap()
+                                + args.get(1).and_then(Value::as_i64).unwrap())
+                                as i32,
                         },
                         "mul" => RpcResponse::Result {
                             call_id,
-                            value: args[0] * args[1],
+                            value: (args.get(0).and_then(Value::as_i64).unwrap()
+                                * args.get(1).and_then(Value::as_i64).unwrap())
+                                as i32,
                         },
                         _ => RpcResponse::Error {
                             call_id: Some(call_id),
@@ -72,8 +77,8 @@ async fn main() -> std::io::Result<()> {
                 RpcRequest::Subscribe { topic } => {
                     unimplemented!("{topic}");
                 }
-                RpcRequest::Publish { topic, payload } => {
-                    unimplemented!("{topic} {payload}");
+                RpcRequest::Publish { topic, args } => {
+                    unimplemented!("{topic} {args}");
                 }
             }
         } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf[..n]) {

@@ -15,14 +15,14 @@ pub enum RpcRequest {
         call_id: CallId,
         object_name: String,
         method: String,
-        args: Vec<i32>,
+        args: serde_json::Value,
     },
     Subscribe {
         topic: String,
     },
     Publish {
         topic: String,
-        payload: String,
+        args: serde_json::Value,
     },
 }
 
@@ -41,7 +41,7 @@ pub enum RpcResponse {
     },
     Event {
         topic: String,
-        payload: String,
+        args: serde_json::Value,
     },
     Subscribed {
         topic: String,
