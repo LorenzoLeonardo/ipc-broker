@@ -2,6 +2,13 @@
 name = "ipc-broker"
 version = "0.1.0"
 edition = "2024"
+authors = ["Lorenzo Leonardo <enzotechcomputersolutions@gmail.com>"]
+license = "MIT"
+description = "A lightweight IPC broker for Rust that supports multiple transports (TCP, Unix sockets) and provides an actor model with message passing and RPC capabilities."
+repository = "https://github.com/LorenzoLeonardo/ipc-broker"
+homepage = "https://github.com/LorenzoLeonardo/ipc-broker"
+documentation = "https://docs.rs/ipc-broker"
+readme = "README.md"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive", "serde_derive"] }
