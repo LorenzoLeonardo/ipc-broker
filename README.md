@@ -1,7 +1,8 @@
 # IPC Broker (Tokio-based)
 
 A lightweight **inter-process communication (IPC) broker** built with [Tokio](https://tokio.rs/) and Rust.  
-It provides **RPC**, **publish/subscribe eventing**, and supports both **TCP** and **Unix domain sockets**.
+It provides **RPC**, **publish/subscribe eventing**, and supports both **TCP** and **Unix domain sockets** for Linux and Mac,
+and supports both **TCP** and **Named Pipes** for Windows
 
 ---
 
@@ -10,6 +11,7 @@ It provides **RPC**, **publish/subscribe eventing**, and supports both **TCP** a
 - **Dual transport support**:
   - TCP (`127.0.0.1:5000`)
   - Unix socket (`/tmp/ipc_broker.sock`)
+  - Named Pipes (`\\.\pipe\ipc_broker`)
 - **RPC calls**:
   - Clients can call registered objects exposed by workers.
   - Responses are automatically routed back to the original caller.
