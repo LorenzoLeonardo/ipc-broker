@@ -27,13 +27,13 @@ enum ClientMsg {
     },
     Subscribe {
         topic: String,
-        updates: mpsc::Sender<serde_json::Value>,
+        updates: mpsc::UnboundedSender<serde_json::Value>,
     },
 }
 
 #[derive(Clone)]
 pub struct ClientHandle {
-    tx: mpsc::Sender<ClientMsg>,
+    tx: mpsc::UnboundedSender<ClientMsg>,
 }
 
 impl ClientHandle {
@@ -63,14 +63,16 @@ impl ClientHandle {
             };
 
         // channel for handles -> actor
-        let (tx, mut rx) = mpsc::channel::<ClientMsg>(CHANNEL_SIZE);
+        let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
 
         // Spawn the client actor task
         tokio::spawn(async move {
             let mut stream = stream;
             let mut buf = vec![0u8; BUF_SIZE];
-            let mut subs: std::collections::HashMap<String, Vec<mpsc::Sender<serde_json::Value>>> =
-                std::collections::HashMap::new();
+            let mut subs: std::collections::HashMap<
+                String,
+                Vec<mpsc::UnboundedSender<serde_json::Value>>,
+            > = std::collections::HashMap::new();
             let mut leftover = Vec::new();
             loop {
                 tokio::select! {
@@ -161,7 +163,7 @@ impl ClientHandle {
                                     if let RpcResponse::Event { topic, args } = resp {
                                         if let Some(subscribers) = subs.get(&topic) {
                                             for tx in subscribers {
-                                                let _ = tx.send(args.clone()).await;
+                                                let _ = tx.send(args.clone());
                                             }
                                     }
                                     } else {
@@ -207,7 +209,6 @@ impl ClientHandle {
         // Send request to actor
         self.tx
             .send(msg)
-            .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))?;
 
         // Wait for reply
@@ -231,19 +232,15 @@ impl ClientHandle {
 
         self.tx
             .send(msg)
-            .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))
     }
 
-    pub async fn subscribe(&self, topic: &str) -> mpsc::Receiver<serde_json::Value> {
-        let (tx_updates, rx_updates) = mpsc::channel(CHANNEL_SIZE);
-        let _ = self
-            .tx
-            .send(ClientMsg::Subscribe {
-                topic: topic.into(),
-                updates: tx_updates,
-            })
-            .await;
+    pub async fn subscribe(&self, topic: &str) -> mpsc::UnboundedReceiver<serde_json::Value> {
+        let (tx_updates, rx_updates) = mpsc::unbounded_channel();
+        let _ = self.tx.send(ClientMsg::Subscribe {
+            topic: topic.into(),
+            updates: tx_updates,
+        });
         rx_updates
     }
 
@@ -251,17 +248,14 @@ impl ClientHandle {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let (tx, mut rx) = mpsc::channel::<Value>(CHANNEL_SIZE);
+        let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
         let callback = Arc::new(callback);
 
         // Tell the actor to subscribe
-        let _ = self
-            .tx
-            .send(ClientMsg::Subscribe {
-                topic: topic.into(),
-                updates: tx,
-            })
-            .await;
+        let _ = self.tx.send(ClientMsg::Subscribe {
+            topic: topic.into(),
+            updates: tx,
+        });
 
         // Spawn a task to handle messages and call the callback synchronously
         tokio::spawn(async move {
