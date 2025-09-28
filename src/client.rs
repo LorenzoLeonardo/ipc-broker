@@ -13,6 +13,7 @@ pub trait AsyncStream: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncStream for T {}
 
 pub const BUF_SIZE: usize = (u16::MAX as usize) + 1;
+pub const CHANNEL_SIZE: usize = 512;
 
 /// Request from a handle to the client actor
 enum ClientMsg {
@@ -46,7 +47,7 @@ impl ClientHandle {
             };
 
         // channel for handles -> actor
-        let (tx, mut rx) = mpsc::channel::<ClientMsg>(32);
+        let (tx, mut rx) = mpsc::channel::<ClientMsg>(CHANNEL_SIZE);
 
         // Spawn the client actor task
         tokio::spawn(async move {
@@ -219,7 +220,7 @@ impl ClientHandle {
     }
 
     pub async fn subscribe(&self, topic: &str) -> mpsc::Receiver<serde_json::Value> {
-        let (tx_updates, rx_updates) = mpsc::channel(32);
+        let (tx_updates, rx_updates) = mpsc::channel(CHANNEL_SIZE);
         let _ = self
             .tx
             .send(ClientMsg::Subscribe {
@@ -234,7 +235,7 @@ impl ClientHandle {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let (tx, mut rx) = mpsc::channel::<Value>(32);
+        let (tx, mut rx) = mpsc::channel::<Value>(CHANNEL_SIZE);
         let callback = Arc::new(callback);
 
         // Tell the actor to subscribe

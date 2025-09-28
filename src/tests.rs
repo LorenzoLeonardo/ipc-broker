@@ -1,13 +1,16 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UnixStream},
     runtime::Runtime,
     sync::oneshot,
     task,
-    time::sleep,
+    time::{sleep, timeout},
 };
 use uuid::Uuid;
 
@@ -405,4 +408,76 @@ async fn client_worker() {
         .unwrap();
 
     println!("Client got response: {response:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn publish_subscribe() {
+    // Shared states for each subscription
+    let news_val: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+    let news1_val: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+
+    // signal channel
+    let (ready_tx, ready_rx) = oneshot::channel();
+    let news_val_for_task = Arc::clone(&news_val);
+    let news1_val_for_task = Arc::clone(&news1_val);
+    tokio::spawn(async move {
+        let client = ClientHandle::connect().await.unwrap();
+
+        let inner_news_val = Arc::clone(&news_val_for_task);
+        client
+            .subscribe_sync("news", move |value| {
+                println!("[News] Received: {value:?}");
+                let mut val = inner_news_val.lock().unwrap();
+                *val = Some(value);
+            })
+            .await;
+
+        let inner_news1_val = Arc::clone(&news1_val_for_task);
+        client
+            .subscribe_sync("news1", move |value| {
+                println!("[News1] Received: {value:?}");
+                let mut val = inner_news1_val.lock().unwrap();
+                *val = Some(value);
+            })
+            .await;
+
+        ready_tx.send(()).unwrap()
+    });
+
+    ready_rx.await.unwrap();
+
+    let proxy = ClientHandle::connect().await.unwrap();
+
+    proxy
+        .publish("news", &json!({"headline": "Rust broker eventing works!"}))
+        .await
+        .unwrap();
+
+    proxy
+        .publish("news1", &json!({"headline": "Another news!"}))
+        .await
+        .unwrap();
+
+    println!("[Publisher] done broadcasting");
+
+    // Wait a bit for callbacks to fire
+    async fn wait_for_update(val: Arc<Mutex<Option<Value>>>) -> Value {
+        timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(v) = val.lock().unwrap().clone() {
+                    return v;
+                }
+                tokio::task::yield_now().await; // let scheduler run
+            }
+        })
+        .await
+        .expect("Timed out waiting for subscriber update")
+    }
+
+    // now assert that messages were received
+    let n1 = wait_for_update(news_val.clone()).await;
+    let n2 = wait_for_update(news1_val.clone()).await;
+
+    assert_eq!(n1["headline"], "Rust broker eventing works!");
+    assert_eq!(n2["headline"], "Another news!");
 }
