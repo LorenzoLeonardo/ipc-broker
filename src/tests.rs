@@ -6,6 +6,8 @@ use std::{
 };
 #[cfg(unix)]
 use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::NamedPipeClient;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -28,6 +30,8 @@ const CLIENTS: usize = 100; // number of concurrent clients
 const OPS_PER_CLIENT: usize = 10; // operations per client
 #[cfg(unix)]
 const UNIX_PATH: &str = "/tmp/ipc_broker.sock";
+#[cfg(windows)]
+const PIPE_PATH: &str = r"\\.\pipe\ipc_broker_4de3b9dc-708b-432d-a2f1-4213e99a7572";
 
 /// Very simple pseudo-random number generator (xorshift)
 struct SimpleRng(u64);
@@ -76,6 +80,8 @@ enum Conn {
     Tcp(TcpStream),
     #[cfg(unix)]
     Unix(UnixStream),
+    #[cfg(windows)]
+    Pipe(NamedPipeClient),
 }
 
 impl Conn {
@@ -86,12 +92,22 @@ impl Conn {
     async fn connect_unix() -> Self {
         Conn::Unix(UnixStream::connect(UNIX_PATH).await.unwrap())
     }
+    #[cfg(windows)]
+    async fn connect_pipe() -> Self {
+        use tokio::net::windows::named_pipe::ClientOptions;
 
+        let pipe = ClientOptions::new()
+            .open(PIPE_PATH)
+            .expect("Failed to open Windows named pipe");
+        Conn::Pipe(pipe)
+    }
     async fn write_all(&mut self, buf: &[u8]) {
         match self {
             Conn::Tcp(s) => s.write_all(buf).await.unwrap(),
             #[cfg(unix)]
             Conn::Unix(s) => s.write_all(buf).await.unwrap(),
+            #[cfg(windows)]
+            Conn::Pipe(s) => s.write_all(buf).await.unwrap(),
         }
     }
     async fn read(&mut self, buf: &mut [u8]) -> usize {
@@ -99,6 +115,8 @@ impl Conn {
             Conn::Tcp(s) => s.read(buf).await.unwrap(),
             #[cfg(unix)]
             Conn::Unix(s) => s.read(buf).await.unwrap(),
+            #[cfg(windows)]
+            Conn::Pipe(s) => s.read(buf).await.unwrap(),
         }
     }
     fn try_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -106,6 +124,8 @@ impl Conn {
             Conn::Tcp(s) => s.try_read(buf),
             #[cfg(unix)]
             Conn::Unix(s) => s.try_read(buf),
+            #[cfg(windows)]
+            Conn::Pipe(s) => s.try_read(buf),
         }
     }
 }
@@ -210,6 +230,14 @@ async fn unix_register_and_call() {
     do_register_and_call(a, b, "unix_obj").await;
 }
 
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipe_register_and_call() {
+    let a = Conn::connect_pipe().await;
+    let b = Conn::connect_pipe().await;
+    do_register_and_call(a, b, "pipe_obj").await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tcp_subscribe_and_publish() {
     let sub = Conn::connect_tcp().await;
@@ -223,6 +251,14 @@ async fn unix_subscribe_and_publish() {
     let sub = Conn::connect_unix().await;
     let pubc = Conn::connect_unix().await;
     do_subscribe_and_publish(sub, pubc, "news_unix").await;
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pipe_subscribe_and_publish() {
+    let sub = Conn::connect_pipe().await;
+    let pubc = Conn::connect_pipe().await;
+    do_subscribe_and_publish(sub, pubc, "news_pipe").await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -276,12 +312,11 @@ async fn tcp_stress_broker() {
                     _ => {}
                 }
 
-                if let Ok(n) = conn.try_read(&mut read_buf) {
-                    if n > 0 {
-                        if let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n]) {
-                            println!("Client {i} got response: {val:?}");
-                        }
-                    }
+                if let Ok(n) = conn.try_read(&mut read_buf)
+                    && n > 0
+                    && let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n])
+                {
+                    println!("Client {i} got response: {val:?}");
                 }
 
                 ops_done += 1;
@@ -352,6 +387,75 @@ async fn unix_stress_broker() {
                             println!("Client {i} got response: {val:?}");
                         }
                     }
+                }
+
+                ops_done += 1;
+                sleep(Duration::from_millis(rng.gen_range(5, 20))).await;
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn pipe_stress_broker() {
+    let mut handles = Vec::new();
+    for i in 0..CLIENTS {
+        handles.push(task::spawn(async move {
+            let mut conn = Conn::connect_pipe().await;
+
+            let seed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64
+                ^ (i as u64);
+            let mut rng = SimpleRng::new(seed);
+
+            let my_object = format!("obj_{i}");
+            let reg = RpcRequest::RegisterObject {
+                object_name: my_object.clone(),
+            };
+            conn.write_all(&serde_json::to_vec(&reg).unwrap()).await;
+
+            let mut ops_done = 0usize;
+            let mut read_buf = vec![0u8; 65536];
+
+            while ops_done < OPS_PER_CLIENT {
+                let op_type = *rng.choose(&["call", "subscribe", "publish"]);
+                match op_type {
+                    "call" => {
+                        let req = RpcRequest::Call {
+                            call_id: CallId(Uuid::new_v4().to_string()),
+                            object_name: my_object.clone(),
+                            method: "echo".into(),
+                            args: json!({"msg": format!("hello from client {i}")}),
+                        };
+                        conn.write_all(&serde_json::to_vec(&req).unwrap()).await;
+                    }
+                    "subscribe" => {
+                        let req = RpcRequest::Subscribe {
+                            topic: format!("topic_{}", i % 10),
+                        };
+                        conn.write_all(&serde_json::to_vec(&req).unwrap()).await;
+                    }
+                    "publish" => {
+                        let req = RpcRequest::Publish {
+                            topic: format!("topic_{}", i % 10),
+                            args: json!({"val": rng.next_u32()}),
+                        };
+                        conn.write_all(&serde_json::to_vec(&req).unwrap()).await;
+                    }
+                    _ => {}
+                }
+
+                if let Ok(n) = conn.try_read(&mut read_buf)
+                    && n > 0
+                    && let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n])
+                {
+                    println!("Client {i} got response: {val:?}");
                 }
 
                 ops_done += 1;
