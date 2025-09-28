@@ -2,15 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Deserializer;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::ServerOptions;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    sync::{Mutex, mpsc},
-};
+use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 // Your RPC types
@@ -32,8 +30,8 @@ enum ClientMsg {
 }
 
 /// Trait alias for supported stream types
-trait Stream: AsyncReadExt + AsyncWriteExt + Unpin + Send {}
-impl<T: AsyncReadExt + AsyncWriteExt + Unpin + Send> Stream for T {}
+trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
+impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
 /// Actor that owns a client connection
 struct ClientActor<S> {
@@ -312,67 +310,78 @@ pub async fn run_broker() -> std::io::Result<()> {
         let _ = std::fs::remove_file("/tmp/ipc_broker.sock"); // cleanup old
         let unix_listener = UnixListener::bind("/tmp/ipc_broker.sock")?;
         println!("Broker listening on TCP 0.0.0.0:5000 and /tmp/ipc_broker.sock");
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = unix_listener.accept().await.unwrap();
+                let client_id = ClientId(Uuid::new_v4().to_string());
+                println!("New Unix connection: {client_id:?}");
 
-        loop {
-            let (stream, _) = unix_listener.accept().await?;
-            let client_id = ClientId(Uuid::new_v4().to_string());
-            println!("New Unix connection: {client_id:?}");
+                let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
+                clients.lock().await.insert(client_id.clone(), tx);
 
-            let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
-            clients.lock().await.insert(client_id.clone(), tx);
-
-            let actor = ClientActor {
-                client_id,
-                stream,
-                rx,
-                objects: objects.clone(),
-                clients: clients.clone(),
-                subscriptions: subscriptions.clone(),
-                calls: calls.clone(),
-            };
-            tokio::spawn(actor.run());
-        }
+                let actor = ClientActor {
+                    client_id,
+                    stream,
+                    rx,
+                    objects: objects.clone(),
+                    clients: clients.clone(),
+                    subscriptions: subscriptions.clone(),
+                    calls: calls.clone(),
+                };
+                tokio::spawn(actor.run());
+            }
+        });
     }
 
     // --- Named pipe listener (Windows only) ---
     #[cfg(windows)]
     {
-        let pipe_name = r"\\.\pipe\ipc_broker";
-        println!("Broker listening on TCP 0.0.0.0:5000 and named pipe {pipe_name}");
+        if std::env::var("CI").is_err() {
+            let pipe_name = r"\\.\pipe\ipc_broker";
+            println!("Broker listening on TCP 0.0.0.0:5000 and named pipe {pipe_name}");
 
-        loop {
-            let server = ServerOptions::new()
-                .first_pipe_instance(true)
-                .create(pipe_name)?;
+            loop {
+                let server = ServerOptions::new()
+                    .first_pipe_instance(true)
+                    .access_inbound(true)
+                    .access_outbound(true)
+                    .create(pipe_name)?;
 
-            let objects = objects.clone();
-            let clients = clients.clone();
-            let subs = subscriptions.clone();
-            let calls = calls.clone();
+                let objects = objects.clone();
+                let clients = clients.clone();
+                let subs = subscriptions.clone();
+                let calls = calls.clone();
 
-            tokio::spawn(async move {
-                match server.connect().await {
-                    Ok(stream) => {
-                        let client_id = ClientId(Uuid::new_v4().to_string());
-                        println!("New NamedPipe connection: {client_id:?}");
+                tokio::spawn(async move {
+                    match server.connect().await {
+                        Ok(()) => {
+                            let client_id = ClientId(Uuid::new_v4().to_string());
+                            println!("New NamedPipe connection: {client_id:?}");
 
-                        let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
-                        clients.lock().await.insert(client_id.clone(), tx);
+                            let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
+                            clients.lock().await.insert(client_id.clone(), tx);
 
-                        let actor = ClientActor {
-                            client_id,
-                            stream,
-                            rx,
-                            objects,
-                            clients,
-                            subscriptions: subs,
-                            calls,
-                        };
-                        tokio::spawn(actor.run());
+                            // Here we use `server` as the stream
+                            let actor = ClientActor {
+                                client_id,
+                                stream: server,
+                                rx,
+                                objects,
+                                clients,
+                                subscriptions: subs,
+                                calls,
+                            };
+                            tokio::spawn(actor.run());
+                        }
+                        Err(e) => eprintln!("NamedPipe connection error: {e:?}"),
                     }
-                    Err(e) => eprintln!("NamedPipe connection error: {e:?}"),
-                }
-            });
+                });
+            }
+        } else {
+            println!("Running on CI, skipping Named Pipe listener");
         }
     }
+    tokio::signal::ctrl_c().await?;
+    println!("Broker shutting down...");
+    Ok(())
 }

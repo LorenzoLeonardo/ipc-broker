@@ -1,0 +1,58 @@
+name: Rust
+
+on:
+  push:
+    branches:
+      - '*'
+  pull_request:
+    branches:
+      - '*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+
+  build-ubuntu:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check fmt
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all --all-features -- --deny warnings
+      - name: Build
+        run: cargo build --verbose
+      - name: Run tests
+        run: cargo test --verbose
+
+  build-macos:
+    runs-on: macos-latest
+    needs: build-ubuntu
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check fmt
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all --all-features -- --deny warnings
+      - name: Build
+        run: cargo build --verbose
+      - name: Run tests
+        run: cargo test --verbose
+
+  build-windows:
+    runs-on: windows-latest
+    needs: build-macos
+    if: github.event_name == 'pull_request' 
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check fmt
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all --all-features -- --deny warnings
+      - name: Build
+        run: cargo build --verbose
+      - name: Run tests
+        run: cargo test --verbose
