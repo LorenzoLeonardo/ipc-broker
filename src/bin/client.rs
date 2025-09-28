@@ -12,5 +12,11 @@ async fn main() -> std::io::Result<()> {
 
     println!("Client got response: {response:?}");
 
+    let response = proxy
+        .remote_call("Calculator", "mul", &json!([5, 7]))
+        .await?;
+
+    println!("Client got response: {response:?}");
+
     Ok(())
 }

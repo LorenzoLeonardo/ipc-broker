@@ -9,6 +9,10 @@ async fn main() -> std::io::Result<()> {
         .publish("news", &json!({"headline": "Rust broker eventing works!"}))
         .await?;
 
+    proxy
+        .publish("news1", &json!({"headline": "Another news!"}))
+        .await?;
+
     println!("[Publisher] done broadcasting");
     Ok(())
 }

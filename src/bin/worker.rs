@@ -1,3 +1,4 @@
+use ipc_broker::client::BUF_SIZE;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -30,7 +31,7 @@ async fn main() -> std::io::Result<()> {
     };
     stream.write_all(&serde_json::to_vec(&reg).unwrap()).await?;
 
-    let mut buf = vec![0u8; 4096];
+    let mut buf = vec![0u8; BUF_SIZE];
     loop {
         let n = stream.read(&mut buf).await?;
         if n == 0 {

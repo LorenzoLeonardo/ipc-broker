@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use ipc_broker::client::BUF_SIZE;
+use serde_json::Deserializer;
 use tokio::net::{TcpListener, UnixListener};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -58,7 +60,9 @@ where
         let mut rx = self.rx;
 
         let reader_task = tokio::spawn(async move {
-            let mut buf = vec![0u8; 4096];
+            let mut buf = vec![0u8; BUF_SIZE];
+            let mut leftover = Vec::new();
+
             loop {
                 let n = match reader.read(&mut buf).await {
                     Ok(0) => {
@@ -72,13 +76,42 @@ where
                     }
                 };
 
-                if let Ok(req) = serde_json::from_slice::<RpcRequest>(&buf[..n]) {
-                    handle_request(req, &inner_client_id, &objects, &clients, &subs, &calls).await;
-                } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf[..n]) {
-                    handle_response(resp, &inner_client_id, &clients, &calls).await;
-                } else {
-                    eprintln!("Unrecognized data from {inner_client_id:?}, {n} bytes");
+                leftover.extend_from_slice(&buf[..n]);
+
+                let mut slice = leftover.as_slice();
+                while !slice.is_empty() {
+                    let mut de = Deserializer::from_slice(slice).into_iter::<serde_json::Value>();
+                    match de.next() {
+                        Some(Ok(val)) => {
+                            let consumed = de.byte_offset();
+                            slice = &slice[consumed..];
+                            println!("Received from {inner_client_id:?}: {val}");
+                            // Dispatch the JSON
+                            if let Ok(req) = serde_json::from_value::<RpcRequest>(val.clone()) {
+                                handle_request(
+                                    req,
+                                    &inner_client_id,
+                                    &objects,
+                                    &clients,
+                                    &subs,
+                                    &calls,
+                                )
+                                .await;
+                            } else if let Ok(resp) = serde_json::from_value::<RpcResponse>(val) {
+                                handle_response(resp, &inner_client_id, &clients, &calls).await;
+                            } else {
+                                eprintln!("Invalid JSON value");
+                            }
+                        }
+                        Some(Err(_)) => {
+                            // Incomplete JSON, wait for more bytes
+                            break;
+                        }
+                        None => break,
+                    }
                 }
+
+                leftover = slice.to_vec();
             }
         });
 
@@ -151,6 +184,7 @@ async fn handle_request(
         }
 
         RpcRequest::Subscribe { topic } => {
+            println!("Client {client_id:?} subscribing to topic '{topic}'");
             subs.lock()
                 .await
                 .entry(topic.clone())
@@ -250,7 +284,7 @@ async fn main() -> std::io::Result<()> {
     tokio::spawn(async move {
         loop {
             let (stream, _) = tcp_listener.accept().await.unwrap();
-            let client_id = ClientId(Uuid::new_v4().as_u128());
+            let client_id = ClientId(Uuid::new_v4().to_string());
             println!("New TCP connection: {client_id:?}");
 
             let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
@@ -276,7 +310,7 @@ async fn main() -> std::io::Result<()> {
 
     loop {
         let (stream, _) = unix_listener.accept().await?;
-        let client_id = ClientId(Uuid::new_v4().as_u128());
+        let client_id = ClientId(Uuid::new_v4().to_string());
         println!("New Unix connection: {client_id:?}");
 
         let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();

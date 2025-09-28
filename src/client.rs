@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use serde_json::Value;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpStream, UnixStream},
@@ -12,9 +15,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncStream for T {}
 pub const BUF_SIZE: usize = (u16::MAX as usize) + 1;
 
 /// Request from a handle to the client actor
-struct ClientMsg {
-    req: RpcRequest,
-    resp_tx: oneshot::Sender<std::io::Result<RpcResponse>>,
+enum ClientMsg {
+    Request {
+        req: RpcRequest,
+        resp_tx: oneshot::Sender<std::io::Result<RpcResponse>>,
+    },
+    Subscribe {
+        topic: String,
+        updates: mpsc::Sender<serde_json::Value>,
+    },
 }
 
 #[derive(Clone)]
@@ -43,50 +52,115 @@ impl ClientHandle {
         tokio::spawn(async move {
             let mut stream = stream;
             let mut buf = vec![0u8; BUF_SIZE];
+            let mut subs: std::collections::HashMap<String, Vec<mpsc::Sender<serde_json::Value>>> =
+                std::collections::HashMap::new();
+            let mut leftover = Vec::new();
+            loop {
+                tokio::select! {
+                    Some(msg) = rx.recv() => {
+                        match msg {
+                            ClientMsg::Request { req, resp_tx } => {
+                                // Serialize and send
+                                let data = match serde_json::to_vec(&req) {
+                                    Ok(d) => d,
+                                    Err(e) => {
+                                        let _ = resp_tx.send(Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)));
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = stream.write_all(&data).await {
+                                    let _ = resp_tx.send(Err(e));
+                                    continue;
+                                }
 
-            while let Some(ClientMsg { req, resp_tx }) = rx.recv().await {
-                // Serialize request
-                let data = match serde_json::to_vec(&req) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        let _ = resp_tx
-                            .send(Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)));
-                        continue;
-                    }
-                };
-
-                // Send to server
-                if let Err(e) = stream.write_all(&data).await {
-                    let _ = resp_tx.send(Err(e));
-                    continue;
-                }
-
-                // Wait for response
-                match stream.read(&mut buf).await {
-                    Ok(0) => {
-                        let _ = resp_tx.send(Err(std::io::Error::new(
-                            std::io::ErrorKind::UnexpectedEof,
-                            "Connection closed by server",
-                        )));
-                        break;
-                    }
-                    Ok(n) => {
-                        let resp: Result<RpcResponse, _> = serde_json::from_slice(&buf[..n]);
-                        match resp {
-                            Ok(r) => {
-                                let _ = resp_tx.send(Ok(r));
+                                // Wait for one response
+                                match req {
+                                    RpcRequest::Call { .. } | RpcRequest::RegisterObject { .. } => {
+                                        // Only these expect a response
+                                        match stream.read(&mut buf).await {
+                                            Ok(0) => {
+                                                let _ = resp_tx.send(Err(std::io::Error::new(
+                                                    std::io::ErrorKind::UnexpectedEof,
+                                                    "Connection closed by server",
+                                                )));
+                                                break;
+                                            }
+                                            Ok(n) => {
+                                                let resp: Result<RpcResponse, _> = serde_json::from_slice(&buf[..n]);
+                                                match resp {
+                                                    Ok(r) => { let _ = resp_tx.send(Ok(r)); }
+                                                    Err(e) => {
+                                                        let _ = resp_tx.send(Err(std::io::Error::new(
+                                                            std::io::ErrorKind::InvalidData,
+                                                            e,
+                                                        )));
+                                                    }
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let _ = resp_tx.send(Err(e));
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    RpcRequest::Publish { .. } | RpcRequest::Subscribe { .. } => {
+                                        // Fire-and-forget: do not await a response
+                                        let _ = resp_tx.send(Ok(RpcResponse::Event {
+                                            topic: "".into(),
+                                            args: serde_json::Value::Null,
+                                        }));
+                                    }
+                                }
                             }
-                            Err(e) => {
-                                let _ = resp_tx.send(Err(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    e,
-                                )));
+                            ClientMsg::Subscribe { topic, updates } => {
+                                println!("Client subscribing to topic: {topic}");
+                                subs.entry(topic.clone())
+                                    .or_default()
+                                    .push(updates);
+                                let _ = stream.write_all(
+                                    &serde_json::to_vec(&RpcRequest::Subscribe { topic }).unwrap()
+                                ).await;
                             }
+
                         }
                     }
-                    Err(e) => {
-                        let _ = resp_tx.send(Err(e));
-                        break;
+                    Ok(n) = stream.read(&mut buf) => {
+                        if n == 0 {
+                            break;
+                        }
+                        println!("Data {}", String::from_utf8_lossy(&buf[..n]));
+                        // Append new data to leftover
+                        leftover.extend_from_slice(&buf[..n]);
+                        let mut slice = leftover.as_slice();
+
+                        while !slice.is_empty() {
+                            let mut de = serde_json::Deserializer::from_slice(slice).into_iter::<RpcResponse>();
+                            match de.next() {
+                                Some(Ok(resp)) => {
+                                    let consumed = de.byte_offset();
+                                    slice = &slice[consumed..];
+                                    println!("Chunk {resp:?}");
+                                    // Handle Publish notifications
+                                    if let RpcResponse::Event { topic, args } = resp {
+                                        if let Some(subscribers) = subs.get(&topic) {
+                                            for tx in subscribers {
+                                                let _ = tx.send(args.clone()).await;
+                                            }
+                                    }
+                                    } else {
+                                        // Other responses are ignored here; handled elsewhere
+                                    }
+                                }
+                                Some(Err(_)) => {
+                                    // Partial JSON, wait for more bytes
+                                    break;
+                                }
+                                None => break,
+                            }
+                        }
+
+                        // Keep unconsumed bytes for next read
+                        leftover = slice.to_vec();
                     }
                 }
             }
@@ -101,7 +175,7 @@ impl ClientHandle {
         method: &str,
         args: &serde_json::Value,
     ) -> std::io::Result<RpcResponse> {
-        let call_id = CallId(Uuid::new_v4().as_u128());
+        let call_id = CallId(Uuid::new_v4().to_string());
 
         let req = RpcRequest::Call {
             call_id,
@@ -111,7 +185,7 @@ impl ClientHandle {
         };
 
         let (resp_tx, resp_rx) = oneshot::channel();
-        let msg = ClientMsg { req, resp_tx };
+        let msg = ClientMsg::Request { req, resp_tx };
 
         // Send request to actor
         self.tx
@@ -130,7 +204,7 @@ impl ClientHandle {
 
     pub async fn publish(&self, topic: &str, args: &serde_json::Value) -> std::io::Result<()> {
         let (resp_tx, _resp_rx) = oneshot::channel();
-        let msg = ClientMsg {
+        let msg = ClientMsg::Request {
             req: RpcRequest::Publish {
                 topic: topic.into(),
                 args: args.clone(),
@@ -142,5 +216,43 @@ impl ClientHandle {
             .send(msg)
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))
+    }
+
+    pub async fn subscribe(&self, topic: &str) -> mpsc::Receiver<serde_json::Value> {
+        let (tx_updates, rx_updates) = mpsc::channel(32);
+        let _ = self
+            .tx
+            .send(ClientMsg::Subscribe {
+                topic: topic.into(),
+                updates: tx_updates,
+            })
+            .await;
+        rx_updates
+    }
+
+    pub async fn subscribe_sync<F>(&self, topic: &str, callback: F)
+    where
+        F: Fn(Value) + Send + Sync + 'static,
+    {
+        let (tx, mut rx) = mpsc::channel::<Value>(32);
+        let callback = Arc::new(callback);
+
+        // Tell the actor to subscribe
+        let _ = self
+            .tx
+            .send(ClientMsg::Subscribe {
+                topic: topic.into(),
+                updates: tx,
+            })
+            .await;
+
+        // Spawn a task to handle messages and call the callback synchronously
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let cb = callback.clone();
+                // Call synchronously
+                cb(msg);
+            }
+        });
     }
 }

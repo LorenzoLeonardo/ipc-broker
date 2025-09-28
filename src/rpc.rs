@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ClientId(pub u128);
+pub struct ClientId(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CallId(pub u128);
+pub struct CallId(pub String);
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum RpcRequest {
