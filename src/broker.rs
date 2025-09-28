@@ -336,16 +336,24 @@ pub async fn run_broker() -> std::io::Result<()> {
     // --- Named pipe listener (Windows only) ---
     #[cfg(windows)]
     {
-        if std::env::var("CI").is_err() {
-            let pipe_name = r"\\.\pipe\ipc_broker";
-            println!("Broker listening on TCP 0.0.0.0:5000 and named pipe {pipe_name}");
-
+        let pipe_name = r"\\.\pipe\ipc_broker_4de3b9dc-708b-432d-a2f1-4213e99a7572";
+        println!("Broker listening on TCP 0.0.0.0:5000 and named pipe {pipe_name}");
+        tokio::spawn(async move {
             loop {
-                let server = ServerOptions::new()
-                    .first_pipe_instance(true)
-                    .access_inbound(true)
-                    .access_outbound(true)
-                    .create(pipe_name)?;
+                // Create a new pipe instance for the next client
+                let server = match ServerOptions::new()
+                    .first_pipe_instance(false) // allow multiple instances
+                    .create(pipe_name)
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        use std::time::Duration;
+
+                        eprintln!("Pipe creation failed: {e:?}");
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                };
 
                 let objects = objects.clone();
                 let clients = clients.clone();
@@ -355,13 +363,15 @@ pub async fn run_broker() -> std::io::Result<()> {
                 tokio::spawn(async move {
                     match server.connect().await {
                         Ok(()) => {
+                            // Assign a unique client ID
                             let client_id = ClientId(Uuid::new_v4().to_string());
                             println!("New NamedPipe connection: {client_id:?}");
 
+                            // Channel for sending messages to this client
                             let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
                             clients.lock().await.insert(client_id.clone(), tx);
 
-                            // Here we use `server` as the stream
+                            // Spawn the ClientActor to handle this connection
                             let actor = ClientActor {
                                 client_id,
                                 stream: server,
@@ -373,13 +383,11 @@ pub async fn run_broker() -> std::io::Result<()> {
                             };
                             tokio::spawn(actor.run());
                         }
-                        Err(e) => eprintln!("NamedPipe connection error: {e:?}"),
+                        Err(e) => eprintln!("NamedPipe connection failed: {e:?}"),
                     }
                 });
             }
-        } else {
-            println!("Running on CI, skipping Named Pipe listener");
-        }
+        });
     }
     tokio::signal::ctrl_c().await?;
     println!("Broker shutting down...");

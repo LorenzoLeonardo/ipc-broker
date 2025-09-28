@@ -47,7 +47,7 @@ pub async fn run_worker(
 
             #[cfg(windows)]
             {
-                let pipe_name = r"\\.\pipe\ipc_broker";
+                let pipe_name = r"\\.\pipe\ipc_broker_4de3b9dc-708b-432d-a2f1-4213e99a7572";
                 let pipe = ClientOptions::new().open(pipe_name)?;
                 println!("Client connected via Named Pipe: {pipe_name}");
                 Box::new(pipe)

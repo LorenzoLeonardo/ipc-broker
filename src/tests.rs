@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::{
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 #[cfg(unix)]
@@ -10,7 +10,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     runtime::Runtime,
-    sync::oneshot,
+    sync::{Mutex, Notify, oneshot},
     task,
     time::{sleep, timeout},
 };
@@ -26,6 +26,7 @@ use crate::{
 /// Stress test parameters
 const CLIENTS: usize = 100; // number of concurrent clients
 const OPS_PER_CLIENT: usize = 100; // operations per client
+#[cfg(unix)]
 const UNIX_PATH: &str = "/tmp/ipc_broker.sock";
 
 /// Very simple pseudo-random number generator (xorshift)
@@ -53,9 +54,6 @@ impl SimpleRng {
 
 #[ctor::ctor]
 fn init_broker() {
-    // Remove stale Unix socket
-    let _ = std::fs::remove_file(UNIX_PATH);
-
     std::thread::spawn(|| {
         let rt = Runtime::new().unwrap();
         rt.block_on(async {
@@ -428,35 +426,41 @@ async fn publish_subscribe() {
     let news1_val: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
 
     // signal channel
-    let (ready_tx, ready_rx) = oneshot::channel();
     let news_val_for_task = Arc::clone(&news_val);
     let news1_val_for_task = Arc::clone(&news1_val);
+    let notify = Arc::new(Notify::new());
+    let notify_clone = notify.clone();
     tokio::spawn(async move {
         let client = ClientHandle::connect().await.unwrap();
 
         let inner_news_val = Arc::clone(&news_val_for_task);
         client
-            .subscribe_sync("news", move |value| {
+            .subscribe_async("news", move |value| {
                 println!("[News] Received: {value:?}");
-                let mut val = inner_news_val.lock().unwrap();
-                *val = Some(value);
+                let inner_news_val = Arc::clone(&inner_news_val);
+                tokio::spawn(async move {
+                    let mut val = inner_news_val.lock().await;
+                    *val = Some(value);
+                });
             })
             .await;
 
         let inner_news1_val = Arc::clone(&news1_val_for_task);
         client
-            .subscribe_sync("news1", move |value| {
+            .subscribe_async("news1", move |value| {
                 println!("[News1] Received: {value:?}");
-                let mut val = inner_news1_val.lock().unwrap();
-                *val = Some(value);
+                let inner_news1_val = Arc::clone(&inner_news1_val);
+                tokio::spawn(async move {
+                    let mut val = inner_news1_val.lock().await;
+                    *val = Some(value);
+                });
             })
             .await;
-
-        ready_tx.send(()).unwrap()
+        tokio::time::sleep(Duration::from_secs(1)).await; // wait a bit for subscriptions to be registered
+        notify_clone.notify_one(); // signal that subscriber is ready
     });
 
-    ready_rx.await.unwrap();
-
+    notify.notified().await; // subscriber ready
     let proxy = ClientHandle::connect().await.unwrap();
 
     proxy
@@ -475,7 +479,7 @@ async fn publish_subscribe() {
     async fn wait_for_update(val: Arc<Mutex<Option<Value>>>) -> Value {
         timeout(Duration::from_secs(10), async {
             loop {
-                if let Some(v) = val.lock().unwrap().clone() {
+                if let Some(v) = val.lock().await.clone() {
                     return v;
                 }
                 tokio::task::yield_now().await; // let scheduler run
