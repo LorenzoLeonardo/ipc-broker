@@ -6,7 +6,7 @@ pub struct ClientId(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CallId(pub String);
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum RpcRequest {
     RegisterObject {
         object_name: String,
@@ -26,7 +26,7 @@ pub enum RpcRequest {
     },
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum RpcResponse {
     Registered {
         object_name: String,
