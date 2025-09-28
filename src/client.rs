@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
 use serde_json::Value;
+#[cfg(unix)]
+use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    net::{TcpStream, UnixStream},
+    net::TcpStream,
     sync::{mpsc, oneshot},
 };
 use uuid::Uuid;
@@ -41,9 +45,21 @@ impl ClientHandle {
                 println!("Client connected via TCP");
                 Box::new(tcp)
             } else {
-                let unix = UnixStream::connect("/tmp/ipc_broker.sock").await?;
-                println!("Client connected via Unix socket");
-                Box::new(unix)
+                // Local IPC depending on OS
+                #[cfg(unix)]
+                {
+                    let unix = UnixStream::connect("/tmp/ipc_broker.sock").await?;
+                    println!("Client connected via Unix socket");
+                    Box::new(unix)
+                }
+
+                #[cfg(windows)]
+                {
+                    let pipe_name = r"\\.\pipe\ipc_broker";
+                    let pipe = ClientOptions::new().open(pipe_name)?;
+                    println!("Client connected via Named Pipe: {pipe_name}");
+                    Box::new(pipe)
+                }
             };
 
         // channel for handles -> actor

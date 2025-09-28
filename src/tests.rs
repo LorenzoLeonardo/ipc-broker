@@ -4,9 +4,13 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+#[cfg(unix)]
+use tokio::net::UnixStream;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpStream, UnixStream},
+    net::TcpStream,
     runtime::Runtime,
     sync::oneshot,
     task,
@@ -74,32 +78,51 @@ fn init_broker() {
 /// Abstraction for client connection type (TCP or Unix)
 enum Conn {
     Tcp(TcpStream),
+    #[cfg(unix)]
     Unix(UnixStream),
+    #[cfg(windows)]
+    Pipe(tokio::net::windows::named_pipe::NamedPipeClient),
 }
 
 impl Conn {
     async fn connect_tcp() -> Self {
         Conn::Tcp(TcpStream::connect("127.0.0.1:5000").await.unwrap())
     }
+    #[cfg(unix)]
     async fn connect_unix() -> Self {
         Conn::Unix(UnixStream::connect(UNIX_PATH).await.unwrap())
+    }
+    #[cfg(windows)]
+    async fn connect_pipe() -> Self {
+        let pipe_name = r"\\.\pipe\ipc_broker";
+        let client = ClientOptions::new().open(pipe_name).unwrap();
+        Conn::Pipe(client)
     }
     async fn write_all(&mut self, buf: &[u8]) {
         match self {
             Conn::Tcp(s) => s.write_all(buf).await.unwrap(),
+            #[cfg(unix)]
             Conn::Unix(s) => s.write_all(buf).await.unwrap(),
+            #[cfg(windows)]
+            Conn::Pipe(s) => s.write_all(buf).await.unwrap(),
         }
     }
     async fn read(&mut self, buf: &mut [u8]) -> usize {
         match self {
             Conn::Tcp(s) => s.read(buf).await.unwrap(),
+            #[cfg(unix)]
             Conn::Unix(s) => s.read(buf).await.unwrap(),
+            #[cfg(windows)]
+            Conn::Pipe(s) => s.read(buf).await.unwrap(),
         }
     }
     fn try_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
             Conn::Tcp(s) => s.try_read(buf),
+            #[cfg(unix)]
             Conn::Unix(s) => s.try_read(buf),
+            #[cfg(windows)]
+            Conn::Pipe(s) => s.try_read(buf),
         }
     }
 }
@@ -210,6 +233,7 @@ async fn tcp_subscribe_and_publish() {
     do_subscribe_and_publish(sub, pubc, "news_tcp").await;
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unix_subscribe_and_publish() {
     let sub = Conn::connect_unix().await;
@@ -286,6 +310,7 @@ async fn tcp_stress_broker() {
     }
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn unix_stress_broker() {
     let mut handles = Vec::new();

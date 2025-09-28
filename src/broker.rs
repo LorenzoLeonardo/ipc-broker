@@ -2,7 +2,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Deserializer;
-use tokio::net::{TcpListener, UnixListener};
+use tokio::net::TcpListener;
+#[cfg(unix)]
+use tokio::net::UnixListener;
+#[cfg(windows)]
+use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{Mutex, mpsc},
@@ -302,28 +306,73 @@ pub async fn run_broker() -> std::io::Result<()> {
         }
     });
 
-    // --- Unix listener ---
-    let _ = std::fs::remove_file("/tmp/ipc_broker.sock"); // cleanup old
-    let unix_listener = UnixListener::bind("/tmp/ipc_broker.sock")?;
-    println!("Broker listening on TCP 0.0.0.0:5000 and /tmp/ipc_broker.sock");
+    // --- Unix listener (Unix only) ---
+    #[cfg(unix)]
+    {
+        let _ = std::fs::remove_file("/tmp/ipc_broker.sock"); // cleanup old
+        let unix_listener = UnixListener::bind("/tmp/ipc_broker.sock")?;
+        println!("Broker listening on TCP 0.0.0.0:5000 and /tmp/ipc_broker.sock");
 
-    loop {
-        let (stream, _) = unix_listener.accept().await?;
-        let client_id = ClientId(Uuid::new_v4().to_string());
-        println!("New Unix connection: {client_id:?}");
+        loop {
+            let (stream, _) = unix_listener.accept().await?;
+            let client_id = ClientId(Uuid::new_v4().to_string());
+            println!("New Unix connection: {client_id:?}");
 
-        let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
-        clients.lock().await.insert(client_id.clone(), tx);
+            let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
+            clients.lock().await.insert(client_id.clone(), tx);
 
-        let actor = ClientActor {
-            client_id,
-            stream,
-            rx,
-            objects: objects.clone(),
-            clients: clients.clone(),
-            subscriptions: subscriptions.clone(),
-            calls: calls.clone(),
-        };
-        tokio::spawn(actor.run());
+            let actor = ClientActor {
+                client_id,
+                stream,
+                rx,
+                objects: objects.clone(),
+                clients: clients.clone(),
+                subscriptions: subscriptions.clone(),
+                calls: calls.clone(),
+            };
+            tokio::spawn(actor.run());
+        }
+    }
+
+    // --- Named pipe listener (Windows only) ---
+    #[cfg(windows)]
+    {
+        let pipe_name = r"\\.\pipe\ipc_broker";
+        println!("Broker listening on TCP 0.0.0.0:5000 and named pipe {pipe_name}");
+
+        loop {
+            let server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(pipe_name)?;
+
+            let objects = objects.clone();
+            let clients = clients.clone();
+            let subs = subscriptions.clone();
+            let calls = calls.clone();
+
+            tokio::spawn(async move {
+                match server.connect().await {
+                    Ok(stream) => {
+                        let client_id = ClientId(Uuid::new_v4().to_string());
+                        println!("New NamedPipe connection: {client_id:?}");
+
+                        let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
+                        clients.lock().await.insert(client_id.clone(), tx);
+
+                        let actor = ClientActor {
+                            client_id,
+                            stream,
+                            rx,
+                            objects,
+                            clients,
+                            subscriptions: subs,
+                            calls,
+                        };
+                        tokio::spawn(actor.run());
+                    }
+                    Err(e) => eprintln!("NamedPipe connection error: {e:?}"),
+                }
+            });
+        }
     }
 }
