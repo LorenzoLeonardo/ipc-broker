@@ -6,8 +6,6 @@ use std::{
 };
 #[cfg(unix)]
 use tokio::net::UnixStream;
-#[cfg(windows)]
-use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -66,11 +64,11 @@ fn init_broker() {
     });
 
     // Wait until TCP is ready
-    for _ in 0..50 {
+    for _ in 0..20 {
         if std::net::TcpStream::connect("127.0.0.1:5000").is_ok() {
             return;
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_secs(1));
     }
     panic!("Broker did not start on TCP");
 }
@@ -80,8 +78,6 @@ enum Conn {
     Tcp(TcpStream),
     #[cfg(unix)]
     Unix(UnixStream),
-    #[cfg(windows)]
-    Pipe(tokio::net::windows::named_pipe::NamedPipeClient),
 }
 
 impl Conn {
@@ -92,19 +88,12 @@ impl Conn {
     async fn connect_unix() -> Self {
         Conn::Unix(UnixStream::connect(UNIX_PATH).await.unwrap())
     }
-    #[cfg(windows)]
-    async fn connect_pipe() -> Self {
-        let pipe_name = r"\\.\pipe\ipc_broker";
-        let client = ClientOptions::new().open(pipe_name).unwrap();
-        Conn::Pipe(client)
-    }
+
     async fn write_all(&mut self, buf: &[u8]) {
         match self {
             Conn::Tcp(s) => s.write_all(buf).await.unwrap(),
             #[cfg(unix)]
             Conn::Unix(s) => s.write_all(buf).await.unwrap(),
-            #[cfg(windows)]
-            Conn::Pipe(s) => s.write_all(buf).await.unwrap(),
         }
     }
     async fn read(&mut self, buf: &mut [u8]) -> usize {
@@ -112,8 +101,6 @@ impl Conn {
             Conn::Tcp(s) => s.read(buf).await.unwrap(),
             #[cfg(unix)]
             Conn::Unix(s) => s.read(buf).await.unwrap(),
-            #[cfg(windows)]
-            Conn::Pipe(s) => s.read(buf).await.unwrap(),
         }
     }
     fn try_read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
@@ -121,8 +108,6 @@ impl Conn {
             Conn::Tcp(s) => s.try_read(buf),
             #[cfg(unix)]
             Conn::Unix(s) => s.try_read(buf),
-            #[cfg(windows)]
-            Conn::Pipe(s) => s.try_read(buf),
         }
     }
 }
@@ -219,6 +204,7 @@ async fn tcp_register_and_call() {
     do_register_and_call(a, b, "tcp_obj").await;
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn unix_register_and_call() {
     let a = Conn::connect_unix().await;

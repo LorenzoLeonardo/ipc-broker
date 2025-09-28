@@ -17,7 +17,7 @@ pub trait AsyncStream: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncStream for T {}
 
 pub const BUF_SIZE: usize = (u16::MAX as usize) + 1;
-pub const CHANNEL_SIZE: usize = 512;
+pub const CHANNEL_SIZE: usize = 1024;
 
 /// Request from a handle to the client actor
 enum ClientMsg {
