@@ -30,7 +30,8 @@ impl SharedObject for Calculator {
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let calc = Calculator;
-    run_worker(calc).await?;
+
+    run_worker(calc, None).await?;
 
     Ok(())
 }

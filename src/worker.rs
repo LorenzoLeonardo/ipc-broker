@@ -3,6 +3,7 @@ use serde_json::Value;
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpStream, UnixStream},
+    sync::oneshot,
 };
 
 use crate::{
@@ -22,7 +23,10 @@ pub trait SharedObject: Send + Sync {
 }
 
 /// Runs a worker that registers a SharedObject with the broker
-pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()> {
+pub async fn run_worker(
+    obj: impl SharedObject + 'static,
+    ready_tx: Option<oneshot::Sender<()>>,
+) -> std::io::Result<()> {
     let mut stream: Box<dyn AsyncStream + Send + Unpin> =
         if let Ok(ip) = std::env::var("BROKER_ADDR") {
             let tcp = TcpStream::connect(ip.as_str()).await?;
@@ -33,7 +37,9 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
             println!("Client connected via Unix socket");
             Box::new(unix)
         };
-
+    if let Some(tx) = ready_tx {
+        let _ = tx.send(()); // signal bound & ready
+    }
     // Register object
     let reg = RpcRequest::RegisterObject {
         object_name: obj.name().into(),

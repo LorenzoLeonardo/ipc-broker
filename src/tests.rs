@@ -1,9 +1,11 @@
-use serde_json::json;
+use async_trait::async_trait;
+use serde_json::{Value, json};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, UnixStream},
     runtime::Runtime,
+    sync::oneshot,
     task,
     time::sleep,
 };
@@ -11,7 +13,9 @@ use uuid::Uuid;
 
 use crate::{
     broker::run_broker,
+    client::ClientHandle,
     rpc::{CallId, RpcRequest, RpcResponse},
+    worker::{SharedObject, run_worker},
 };
 
 /// Stress test parameters
@@ -98,7 +102,6 @@ impl Conn {
 }
 
 /// === TEST HELPERS ===
-
 async fn do_register_and_call(mut a: Conn, mut b: Conn, obj_name: &str) {
     // Register
     let reg = RpcRequest::RegisterObject {
@@ -347,4 +350,59 @@ async fn unix_stress_broker() {
     for h in handles {
         let _ = h.await;
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn client_worker() {
+    struct Calculator;
+
+    #[async_trait]
+    impl SharedObject for Calculator {
+        fn name(&self) -> &str {
+            "Calculator"
+        }
+
+        async fn call(&self, method: &str, args: &Value) -> Value {
+            match method {
+                "add" => {
+                    let a = args.get(0).and_then(Value::as_i64).unwrap_or(0);
+                    let b = args.get(1).and_then(Value::as_i64).unwrap_or(0);
+                    (a + b).into()
+                }
+                "mul" => {
+                    let a = args.get(0).and_then(Value::as_i64).unwrap_or(0);
+                    let b = args.get(1).and_then(Value::as_i64).unwrap_or(0);
+                    (a * b).into()
+                }
+                _ => Value::String("Unknown method".into()),
+            }
+        }
+    }
+
+    // signal channel
+    let (ready_tx, ready_rx) = oneshot::channel();
+
+    tokio::spawn(async move {
+        // worker starts
+        run_worker(Calculator, Some(ready_tx)).await.unwrap()
+    });
+
+    // Wait until worker signals ready
+    let _ = ready_rx.await;
+
+    let proxy = ClientHandle::connect().await.unwrap();
+
+    let response = proxy
+        .remote_call("Calculator", "add", &json!([5, 7]))
+        .await
+        .unwrap();
+
+    println!("Client got response: {response:?}");
+
+    let response = proxy
+        .remote_call("Calculator", "mul", &json!([5, 7]))
+        .await
+        .unwrap();
+
+    println!("Client got response: {response:?}");
 }
