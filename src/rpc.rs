@@ -33,7 +33,8 @@ pub enum RpcResponse {
     },
     Result {
         call_id: CallId,
-        value: i32,
+        object_name: String,
+        value: serde_json::Value,
     },
     Error {
         call_id: Option<CallId>,
