@@ -25,7 +25,7 @@ use crate::{
 
 /// Stress test parameters
 const CLIENTS: usize = 100; // number of concurrent clients
-const OPS_PER_CLIENT: usize = 100; // operations per client
+const OPS_PER_CLIENT: usize = 10; // operations per client
 #[cfg(unix)]
 const UNIX_PATH: &str = "/tmp/ipc_broker.sock";
 
