@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use serde_json::Value;
+use serde_json::{Deserializer, Value};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 #[cfg(windows)]
@@ -37,7 +37,6 @@ pub async fn run_worker(
             println!("Client connected via TCP");
             Box::new(tcp)
         } else {
-            // Local IPC depending on OS
             #[cfg(unix)]
             {
                 let unix = UnixStream::connect("/tmp/ipc_broker.sock").await?;
@@ -47,56 +46,84 @@ pub async fn run_worker(
 
             #[cfg(windows)]
             {
-                let pipe_name = r"\\.\pipe\ipc_broker_4de3b9dc-708b-432d-a2f1-4213e99a7572";
+                let pipe_name = r"\\.\pipe\ipc_broker";
                 let pipe = ClientOptions::new().open(pipe_name)?;
                 println!("Client connected via Named Pipe: {pipe_name}");
                 Box::new(pipe)
             }
         };
+
     if let Some(tx) = ready_tx {
         let _ = tx.send(()); // signal bound & ready
     }
+
     // Register object
     let reg = RpcRequest::RegisterObject {
         object_name: obj.name().into(),
     };
     stream.write_all(&serde_json::to_vec(&reg).unwrap()).await?;
 
-    let mut buf = vec![0u8; BUF_SIZE];
+    let mut buf = Vec::new();
+    let mut tmp = vec![0u8; BUF_SIZE];
+
     loop {
-        let n = stream.read(&mut buf).await?;
+        let n = stream.read(&mut tmp).await?;
         if n == 0 {
             break;
         }
+        buf.extend_from_slice(&tmp[..n]);
 
-        if let Ok(req) = serde_json::from_slice::<RpcRequest>(&buf[..n]) {
-            match req {
-                RpcRequest::Call {
-                    call_id,
-                    object_name,
-                    method,
-                    args,
-                } => {
-                    println!("Worker handling {method}({args})");
-                    let result = obj.call(&method, &args).await;
+        // keep extracting JSON messages until nothing left to parse
+        loop {
+            let mut de = Deserializer::from_slice(&buf).into_iter::<serde_json::Value>();
 
-                    let resp = RpcResponse::Result {
-                        call_id,
-                        object_name,
-                        value: result,
-                    };
+            match de.next() {
+                Some(Ok(val)) => {
+                    let consumed = de.byte_offset();
 
-                    let resp_bytes = serde_json::to_vec(&resp).unwrap();
-                    stream.write_all(&resp_bytes).await?;
+                    if let Ok(req) = serde_json::from_value::<RpcRequest>(val.clone()) {
+                        match req {
+                            RpcRequest::Call {
+                                call_id,
+                                object_name,
+                                method,
+                                args,
+                            } => {
+                                println!("Worker handling {method}({args})");
+                                let result = obj.call(&method, &args).await;
+
+                                let resp = RpcResponse::Result {
+                                    call_id,
+                                    object_name,
+                                    value: result,
+                                };
+
+                                let resp_bytes = serde_json::to_vec(&resp).unwrap();
+                                stream.write_all(&resp_bytes).await?;
+                            }
+                            _ => {
+                                println!("Worker got unsupported request: {req:?}");
+                            }
+                        }
+                    } else if let Ok(resp) = serde_json::from_value::<RpcResponse>(val) {
+                        println!("Worker got response: {resp:?}");
+                    }
+
+                    // remove parsed bytes and keep looping
+                    buf.drain(..consumed);
                 }
-                _ => {
-                    println!("Worker got unsupported request: {req:?}");
+                Some(Err(e)) if e.is_eof() => {
+                    // partial JSON, wait for more data
+                    break;
                 }
+                Some(Err(e)) => {
+                    eprintln!("JSON parse error: {e:?}");
+                    // skip bad data
+                    buf.clear();
+                    break;
+                }
+                None => break,
             }
-        } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf[..n]) {
-            println!("Worker got response: {resp:?}");
-        } else {
-            eprintln!("Unknown message: {}", String::from_utf8_lossy(&buf[..n]));
         }
     }
 
