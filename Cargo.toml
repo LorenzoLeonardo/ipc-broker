@@ -19,4 +19,5 @@ tokio = { version = "1.47", features = ["full"] }
 uuid = { version = "1.18", features = ["v4"] }
 
 [dev-dependencies]
+anyhow = "1.0.100"
 ctor = "0.5"
