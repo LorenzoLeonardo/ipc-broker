@@ -12,12 +12,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::rpc::{CallId, RpcRequest, RpcResponse};
+use crate::rpc::{BUF_SIZE, CallId, RpcRequest, RpcResponse};
 pub trait AsyncStream: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncStream for T {}
-
-pub const BUF_SIZE: usize = (u16::MAX as usize) + 1;
-pub const CHANNEL_SIZE: usize = 1024;
 
 /// Request from a handle to the client actor
 enum ClientMsg {
@@ -48,16 +45,18 @@ impl ClientHandle {
                 // Local IPC depending on OS
                 #[cfg(unix)]
                 {
-                    let unix = UnixStream::connect("/tmp/ipc_broker.sock").await?;
+                    use crate::rpc::UNIX_PATH;
+
+                    let unix = UnixStream::connect(UNIX_PATH).await?;
                     println!("Client connected via Unix socket");
                     Box::new(unix)
                 }
 
                 #[cfg(windows)]
                 {
+                    use crate::rpc::PIPE_PATH;
                     loop {
-                        let pipe_name = r"\\.\pipe\ipc_broker";
-                        let res = match ClientOptions::new().open(pipe_name) {
+                        let res = match ClientOptions::new().open(PIPE_PATH) {
                             Ok(pipe) => Box::new(pipe),
                             Err(e) if e.raw_os_error() == Some(231) => {
                                 // All pipe instances busy → wait and retry

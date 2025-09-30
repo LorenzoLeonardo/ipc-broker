@@ -29,10 +29,6 @@ use crate::{
 // Stress test parameters (reduced slightly to avoid CI flakiness)
 const CLIENTS: usize = 100; // lowered concurrency for stability
 const OPS_PER_CLIENT: usize = 100; // fewer ops per client
-#[cfg(unix)]
-const UNIX_PATH: &str = "/tmp/ipc_broker.sock";
-#[cfg(windows)]
-const PIPE_PATH: &str = r"\\.\pipe\ipc_broker";
 
 // Simple RNG
 struct SimpleRng(u64);
@@ -108,10 +104,13 @@ impl Conn {
     }
     #[cfg(unix)]
     async fn connect_unix() -> Self {
+        use crate::rpc::UNIX_PATH;
+
         Conn::Unix(UnixStream::connect(UNIX_PATH).await.unwrap())
     }
     #[cfg(windows)]
     async fn connect_pipe() -> Self {
+        use crate::rpc::PIPE_PATH;
         loop {
             match ClientOptions::new().open(PIPE_PATH) {
                 Ok(pipe) => return Conn::Pipe(pipe),
@@ -215,12 +214,10 @@ async fn tcp_stress_broker() {
                 // non-blocking read
                 if let Ok(Ok(n)) =
                     timeout(Duration::from_millis(50), conn.read_some(&mut read_buf)).await
+                    && n > 0
+                    && let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n])
                 {
-                    if n > 0 {
-                        if let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n]) {
-                            println!("Client {i} got response: {val:?}");
-                        }
-                    }
+                    println!("Client {i} got response: {val:?}");
                 }
 
                 ops_done += 1;
@@ -387,12 +384,10 @@ async fn pipe_stress_broker() {
                 // non-blocking read
                 if let Ok(Ok(n)) =
                     timeout(Duration::from_millis(50), conn.read_some(&mut read_buf)).await
+                    && n > 0
+                    && let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n])
                 {
-                    if n > 0 {
-                        if let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n]) {
-                            println!("Client {i} got response: {val:?}");
-                        }
-                    }
+                    println!("Client {i} got response: {val:?}");
                 }
 
                 ops_done += 1;

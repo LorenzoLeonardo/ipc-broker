@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+pub const BUF_SIZE: usize = (u16::MAX as usize) + 1;
+pub const TCP_ADDR: &str = "0.0.0.0:5000";
+#[cfg(unix)]
+pub const UNIX_PATH: &str = "/tmp/ipc_broker.sock";
+#[cfg(windows)]
+pub const PIPE_PATH: &str = r"\\.\pipe\ipc_broker";
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ClientId(pub String);
 

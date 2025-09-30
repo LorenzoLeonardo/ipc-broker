@@ -9,10 +9,7 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::{
-    client::BUF_SIZE,
-    rpc::{RpcRequest, RpcResponse},
-};
+use crate::rpc::{BUF_SIZE, RpcRequest, RpcResponse};
 
 trait AsyncStream: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncStream for T {}
@@ -35,16 +32,18 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
         } else {
             #[cfg(unix)]
             {
-                let unix = UnixStream::connect("/tmp/ipc_broker.sock").await?;
+                use crate::rpc::UNIX_PATH;
+
+                let unix = UnixStream::connect(UNIX_PATH).await?;
                 println!("Client connected via Unix socket");
                 Box::new(unix)
             }
 
             #[cfg(windows)]
             {
+                use crate::rpc::PIPE_PATH;
                 loop {
-                    let pipe_name = r"\\.\pipe\ipc_broker";
-                    let res = match ClientOptions::new().open(pipe_name) {
+                    let res = match ClientOptions::new().open(PIPE_PATH) {
                         Ok(pipe) => Box::new(pipe),
                         Err(e) if e.raw_os_error() == Some(231) => {
                             // All pipe instances busy → wait and retry
@@ -57,7 +56,7 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
                         }
                         Err(e) => panic!("Failed to connect to pipe: {}", e),
                     };
-                    println!("Client connected via Named Pipe: {pipe_name}");
+                    println!("Client connected via Named Pipe: {PIPE_PATH}");
                     break res;
                 }
             }
