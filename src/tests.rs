@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use core::panic;
 use serde_json::{Value, json};
 use std::{
     sync::Arc,
@@ -7,7 +8,7 @@ use std::{
 #[cfg(unix)]
 use tokio::net::UnixStream;
 #[cfg(windows)]
-use tokio::net::windows::named_pipe::NamedPipeClient;
+use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -26,8 +27,8 @@ use crate::{
 };
 
 // Stress test parameters (reduced slightly to avoid CI flakiness)
-const CLIENTS: usize = 50; // lowered concurrency for stability
-const OPS_PER_CLIENT: usize = 8; // fewer ops per client
+const CLIENTS: usize = 100; // lowered concurrency for stability
+const OPS_PER_CLIENT: usize = 100; // fewer ops per client
 #[cfg(unix)]
 const UNIX_PATH: &str = "/tmp/ipc_broker.sock";
 #[cfg(windows)]
@@ -111,13 +112,21 @@ impl Conn {
     }
     #[cfg(windows)]
     async fn connect_pipe() -> Self {
-        use tokio::net::windows::named_pipe::ClientOptions;
-
-        let pipe = ClientOptions::new()
-            .open(PIPE_PATH)
-            .expect("Failed to open Windows named pipe");
-        Conn::Pipe(pipe)
+        loop {
+            match ClientOptions::new().open(PIPE_PATH) {
+                Ok(pipe) => return Conn::Pipe(pipe),
+                Err(e) if e.raw_os_error() == Some(231) => {
+                    // All pipe instances are busy, wait and retry
+                    eprintln!("Pipe busy, retrying...");
+                    sleep(Duration::from_millis(100)).await;
+                }
+                Err(e) => {
+                    panic!("Failed to open Windows named pipe: {e:?}");
+                }
+            }
+        }
     }
+
     async fn write_all(&mut self, buf: &[u8]) {
         match self {
             Conn::Tcp(s) => s.write_all(buf).await.unwrap(),
