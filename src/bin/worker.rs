@@ -31,7 +31,7 @@ impl SharedObject for Calculator {
 async fn main() -> std::io::Result<()> {
     let calc = Calculator;
 
-    run_worker(calc, None).await?;
+    run_worker(calc).await?;
 
     Ok(())
 }

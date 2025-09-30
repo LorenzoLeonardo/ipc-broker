@@ -240,6 +240,15 @@ impl ServerState {
             RpcRequest::Publish { topic, args } => {
                 self.handle_publish(topic, args).await;
             }
+
+            RpcRequest::HasObject { object_name } => {
+                let exists = { self.objects.lock().await.contains_key(&object_name) };
+                let resp = RpcResponse::HasObjectResult {
+                    object_name,
+                    exists,
+                };
+                Self::send_to_client(&self.clients, client_id, &resp).await;
+            }
         }
     }
 

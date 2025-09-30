@@ -107,7 +107,7 @@ impl ClientHandle {
 
                                 // Wait for one response
                                 match req {
-                                    RpcRequest::Call { .. } | RpcRequest::RegisterObject { .. } => {
+                                    RpcRequest::Call { .. } | RpcRequest::RegisterObject { .. } | RpcRequest::HasObject { .. } => {
                                         // Only these expect a response
                                         match stream.read(&mut buf).await {
                                             Ok(0) => {
@@ -278,5 +278,42 @@ impl ClientHandle {
                 cb(msg);
             }
         });
+    }
+
+    pub async fn wait_for_object(&self, object: &str) -> std::io::Result<()> {
+        loop {
+            if self.has_object(object).await? {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn has_object(&self, object: &str) -> std::io::Result<bool> {
+        let req = RpcRequest::HasObject {
+            object_name: object.into(),
+        };
+
+        let (resp_tx, resp_rx) = oneshot::channel();
+        let msg = ClientMsg::Request { req, resp_tx };
+
+        // Send request to actor
+        self.tx
+            .send(msg)
+            .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))?;
+
+        // Wait for reply
+        match resp_rx.await.unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionAborted,
+                "Actor task ended",
+            ))
+        })? {
+            RpcResponse::HasObjectResult { exists, .. } => Ok(exists),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Unexpected response type",
+            )),
+        }
     }
 }
