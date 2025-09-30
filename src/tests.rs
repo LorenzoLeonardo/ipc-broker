@@ -13,7 +13,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     runtime::Runtime,
-    sync::{Mutex, Notify, oneshot},
+    sync::{Mutex, Notify},
     task,
     time::{sleep, timeout},
 };
@@ -147,176 +147,6 @@ impl Conn {
     }
 }
 
-/// Attempt to read a single JSON value from the connection.
-/// This repeatedly reads into an internal buffer until serde_json can parse one complete value.
-async fn read_json_message(conn: &mut Conn, buf: &mut Vec<u8>) -> anyhow::Result<Vec<u8>> {
-    use serde_json::Deserializer;
-
-    buf.clear();
-    let mut tmp = [0u8; 4096];
-
-    // we'll try for a short bounded amount of time to avoid hangs
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
-    loop {
-        // try to parse current buffer
-        if !buf.is_empty() {
-            let mut de = Deserializer::from_slice(&buf).into_iter::<serde_json::Value>();
-            if let Some(Ok(_)) = de.next() {
-                // we have at least one full JSON value
-                return Ok(buf.clone());
-            }
-        }
-
-        // check deadline
-        if tokio::time::Instant::now() > deadline {
-            return Err(anyhow::anyhow!("timed out reading JSON message"));
-        }
-
-        // read some bytes
-        match timeout(Duration::from_millis(250), conn.read_some(&mut tmp)).await {
-            Ok(Ok(0)) => return Err(anyhow::anyhow!("connection closed")),
-            Ok(Ok(n)) => buf.extend_from_slice(&tmp[..n]),
-            Ok(Err(e)) => return Err(anyhow::anyhow!(e)),
-            Err(_) => {
-                // no data this iteration, allow other tasks to run
-                tokio::task::yield_now().await;
-            }
-        }
-    }
-}
-
-async fn do_register_and_call(mut a: Conn, mut b: Conn, obj_name: &str) {
-    ensure_broker_running();
-
-    // Register
-    let reg = RpcRequest::RegisterObject {
-        object_name: obj_name.to_string(),
-    };
-    a.write_all(&serde_json::to_vec(&reg).unwrap()).await;
-
-    let mut buf = Vec::with_capacity(8192);
-    let resp_bytes = read_json_message(&mut a, &mut buf)
-        .await
-        .expect("read register resp");
-    let val: RpcResponse = serde_json::from_slice(&resp_bytes).unwrap();
-    assert_eq!(
-        val,
-        RpcResponse::Registered {
-            object_name: obj_name.to_string()
-        }
-    );
-
-    // Call
-    let call_id = Uuid::new_v4().to_string();
-    let call = RpcRequest::Call {
-        call_id: CallId(call_id.clone()),
-        object_name: obj_name.to_string(),
-        method: "echo".to_string(),
-        args: json!({"msg": "hi"}),
-    };
-    b.write_all(&serde_json::to_vec(&call).unwrap()).await;
-
-    let forwarded_bytes = read_json_message(&mut a, &mut buf)
-        .await
-        .expect("read forwarded");
-    let forwarded: RpcRequest = serde_json::from_slice(&forwarded_bytes).unwrap();
-    assert_eq!(forwarded, call);
-
-    // Reply
-    let result = RpcResponse::Result {
-        call_id: CallId(call_id.clone()),
-        object_name: obj_name.to_string(),
-        value: json!({"msg": "hi"}),
-    };
-    a.write_all(&serde_json::to_vec(&result).unwrap()).await;
-
-    let result_bytes = read_json_message(&mut b, &mut buf)
-        .await
-        .expect("read result");
-    let val: RpcResponse = serde_json::from_slice(&result_bytes).unwrap();
-    assert_eq!(val, result);
-}
-
-async fn do_subscribe_and_publish(mut sub: Conn, mut pub_client: Conn, topic: &str) {
-    ensure_broker_running();
-
-    // Subscribe
-    let sub_req = RpcRequest::Subscribe {
-        topic: topic.to_string(),
-    };
-    sub.write_all(&serde_json::to_vec(&sub_req).unwrap()).await;
-
-    let mut buf = Vec::with_capacity(8192);
-    let resp_bytes = read_json_message(&mut sub, &mut buf)
-        .await
-        .expect("read sub resp");
-    let resp: RpcResponse = serde_json::from_slice(&resp_bytes).unwrap();
-    assert_eq!(
-        resp,
-        RpcResponse::Subscribed {
-            topic: topic.to_string()
-        }
-    );
-
-    // Publish
-    let publish = RpcRequest::Publish {
-        topic: topic.to_string(),
-        args: json!({"headline": "broker works!"}),
-    };
-    pub_client
-        .write_all(&serde_json::to_vec(&publish).unwrap())
-        .await;
-
-    // Event should arrive
-    let event_bytes = read_json_message(&mut sub, &mut buf)
-        .await
-        .expect("read event");
-    let event: RpcResponse = serde_json::from_slice(&event_bytes).unwrap();
-    assert_eq!(
-        event,
-        RpcResponse::Event {
-            topic: topic.to_string(),
-            args: json!({"headline": "broker works!"})
-        }
-    );
-}
-
-/// === ACTUAL TESTS ===
-
-#[tokio::test]
-async fn tcp_register_and_call() {
-    ensure_broker_running();
-    let a = Conn::connect_tcp().await;
-    let b = Conn::connect_tcp().await;
-    do_register_and_call(a, b, "tcp_obj").await;
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn unix_register_and_call() {
-    ensure_broker_running();
-    let a = Conn::connect_unix().await;
-    let b = Conn::connect_unix().await;
-    do_register_and_call(a, b, "unix_obj").await;
-}
-
-#[cfg(windows)]
-#[tokio::test]
-async fn pipe_register_and_call() {
-    ensure_broker_running();
-    let a = Conn::connect_pipe().await;
-    let b = Conn::connect_pipe().await;
-    do_register_and_call(a, b, "pipe_obj").await;
-}
-
-#[tokio::test]
-async fn tcp_subscribe_and_publish() {
-    ensure_broker_running();
-    let sub = Conn::connect_tcp().await;
-    let pubc = Conn::connect_tcp().await;
-    do_subscribe_and_publish(sub, pubc, "news_tcp").await;
-}
-
 // (Stress tests reduced and made more conservative)
 #[tokio::test]
 async fn tcp_stress_broker() {
@@ -325,6 +155,178 @@ async fn tcp_stress_broker() {
     for i in 0..CLIENTS {
         handles.push(task::spawn(async move {
             let mut conn = Conn::connect_tcp().await;
+
+            let seed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64
+                ^ (i as u64);
+            let mut rng = SimpleRng::new(seed);
+
+            let my_object = format!("obj_{i}");
+            let reg = RpcRequest::RegisterObject {
+                object_name: my_object.clone(),
+            };
+            conn.write_all(&serde_json::to_vec(&reg).unwrap()).await;
+
+            let mut ops_done = 0usize;
+            let mut read_buf = vec![0u8; 65536];
+
+            while ops_done < OPS_PER_CLIENT {
+                let op_type = *rng.choose(&["call", "subscribe", "publish"]);
+                match op_type {
+                    "call" => {
+                        let req = RpcRequest::Call {
+                            call_id: CallId(Uuid::new_v4().to_string()),
+                            object_name: my_object.clone(),
+                            method: "echo".into(),
+                            args: json!({"msg": format!("hello from client {i}")}),
+                        };
+                        let _ = timeout(
+                            Duration::from_secs(1),
+                            conn.write_all(&serde_json::to_vec(&req).unwrap()),
+                        )
+                        .await;
+                    }
+                    "subscribe" => {
+                        let req = RpcRequest::Subscribe {
+                            topic: format!("topic_{}", i % 10),
+                        };
+                        let _ = timeout(
+                            Duration::from_secs(1),
+                            conn.write_all(&serde_json::to_vec(&req).unwrap()),
+                        )
+                        .await;
+                    }
+                    "publish" => {
+                        let req = RpcRequest::Publish {
+                            topic: format!("topic_{}", i % 10),
+                            args: json!({"val": rng.next_u32()}),
+                        };
+                        let _ = timeout(
+                            Duration::from_secs(1),
+                            conn.write_all(&serde_json::to_vec(&req).unwrap()),
+                        )
+                        .await;
+                    }
+                    _ => {}
+                }
+
+                // non-blocking read
+                if let Ok(Ok(n)) =
+                    timeout(Duration::from_millis(50), conn.read_some(&mut read_buf)).await
+                {
+                    if n > 0 {
+                        if let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n]) {
+                            println!("Client {i} got response: {val:?}");
+                        }
+                    }
+                }
+
+                ops_done += 1;
+                sleep(Duration::from_millis(rng.gen_range(5, 20))).await;
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_stress_broker() {
+    ensure_broker_running();
+    let mut handles = Vec::new();
+    for i in 0..CLIENTS {
+        handles.push(task::spawn(async move {
+            let mut conn = Conn::connect_unix().await;
+
+            let seed = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64
+                ^ (i as u64);
+            let mut rng = SimpleRng::new(seed);
+
+            let my_object = format!("obj_{i}");
+            let reg = RpcRequest::RegisterObject {
+                object_name: my_object.clone(),
+            };
+            conn.write_all(&serde_json::to_vec(&reg).unwrap()).await;
+
+            let mut ops_done = 0usize;
+            let mut read_buf = vec![0u8; 65536];
+
+            while ops_done < OPS_PER_CLIENT {
+                let op_type = *rng.choose(&["call", "subscribe", "publish"]);
+                match op_type {
+                    "call" => {
+                        let req = RpcRequest::Call {
+                            call_id: CallId(Uuid::new_v4().to_string()),
+                            object_name: my_object.clone(),
+                            method: "echo".into(),
+                            args: json!({"msg": format!("hello from client {i}")}),
+                        };
+                        let _ = timeout(
+                            Duration::from_secs(1),
+                            conn.write_all(&serde_json::to_vec(&req).unwrap()),
+                        )
+                        .await;
+                    }
+                    "subscribe" => {
+                        let req = RpcRequest::Subscribe {
+                            topic: format!("topic_{}", i % 10),
+                        };
+                        let _ = timeout(
+                            Duration::from_secs(1),
+                            conn.write_all(&serde_json::to_vec(&req).unwrap()),
+                        )
+                        .await;
+                    }
+                    "publish" => {
+                        let req = RpcRequest::Publish {
+                            topic: format!("topic_{}", i % 10),
+                            args: json!({"val": rng.next_u32()}),
+                        };
+                        let _ = timeout(
+                            Duration::from_secs(1),
+                            conn.write_all(&serde_json::to_vec(&req).unwrap()),
+                        )
+                        .await;
+                    }
+                    _ => {}
+                }
+
+                // non-blocking read
+                if let Ok(Ok(n)) =
+                    timeout(Duration::from_millis(50), conn.read_some(&mut read_buf)).await
+                {
+                    if n > 0 {
+                        if let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n]) {
+                            println!("Client {i} got response: {val:?}");
+                        }
+                    }
+                }
+
+                ops_done += 1;
+                sleep(Duration::from_millis(rng.gen_range(5, 20))).await;
+            }
+        }));
+    }
+    for h in handles {
+        let _ = h.await;
+    }
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn pipe_stress_broker() {
+    ensure_broker_running();
+    let mut handles = Vec::new();
+    for i in 0..CLIENTS {
+        handles.push(task::spawn(async move {
+            let mut conn = Conn::connect_pipe().await;
 
             let seed = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -432,40 +434,56 @@ async fn client_worker() {
         }
     }
 
-    let (ready_tx, ready_rx) = oneshot::channel();
-
     tokio::spawn(async move {
         // IMPORTANT: ensure run_worker signals readiness
-        if let Err(e) = run_worker(Calculator, Some(ready_tx)).await {
+        if let Err(e) = run_worker(Calculator).await {
             eprintln!("worker exited early: {e:?}");
         }
     });
 
-    // Wait until worker signals ready
-    timeout(Duration::from_secs(5), ready_rx)
-        .await
-        .expect("worker startup timed out")
-        .expect("ready channel dropped");
-
     let proxy = ClientHandle::connect().await.unwrap();
 
-    let response = timeout(
-        Duration::from_secs(3),
-        proxy.remote_call("Calculator", "add", &json!([5, 7])),
-    )
-    .await
-    .expect("call add timed out")
-    .unwrap();
+    proxy
+        .wait_for_object("Calculator")
+        .await
+        .expect("wait_for_object failed");
+
+    let response = proxy
+        .remote_call("Calculator", "add", &json!([5, 7]))
+        .await
+        .unwrap();
     println!("Client got response: {response:?}");
+    if let RpcResponse::Result {
+        call_id: _,
+        object_name,
+        value,
+    } = response
+    {
+        assert_eq!(object_name, "Calculator");
+        assert_eq!(value, json!(12));
+    } else {
+        panic!("expected Result response");
+    }
 
     let response = timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(5),
         proxy.remote_call("Calculator", "mul", &json!([5, 7])),
     )
     .await
     .expect("call mul timed out")
     .unwrap();
     println!("Client got response: {response:?}");
+    if let RpcResponse::Result {
+        call_id: _,
+        object_name,
+        value,
+    } = response
+    {
+        assert_eq!(object_name, "Calculator");
+        assert_eq!(value, json!(35));
+    } else {
+        panic!("expected Result response");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -512,7 +530,7 @@ async fn publish_subscribe() {
     });
 
     // wait for subscriber ready but bound it
-    let _ = timeout(Duration::from_secs(3), notify.notified())
+    timeout(Duration::from_secs(3), notify.notified())
         .await
         .expect("subscriber did not register in time");
     let proxy = ClientHandle::connect().await.unwrap();

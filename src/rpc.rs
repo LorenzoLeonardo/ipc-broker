@@ -24,6 +24,9 @@ pub enum RpcRequest {
         topic: String,
         args: serde_json::Value,
     },
+    HasObject {
+        object_name: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -46,5 +49,9 @@ pub enum RpcResponse {
     },
     Subscribed {
         topic: String,
+    },
+    HasObjectResult {
+        object_name: String,
+        exists: bool,
     },
 }
