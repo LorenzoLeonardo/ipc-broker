@@ -55,10 +55,23 @@ impl ClientHandle {
 
                 #[cfg(windows)]
                 {
-                    let pipe_name = r"\\.\pipe\ipc_broker";
-                    let pipe = ClientOptions::new().open(pipe_name)?;
-                    println!("Client connected via Named Pipe: {pipe_name}");
-                    Box::new(pipe)
+                    loop {
+                        let pipe_name = r"\\.\pipe\ipc_broker";
+                        let res = match ClientOptions::new().open(pipe_name) {
+                            Ok(pipe) => Box::new(pipe),
+                            Err(e) if e.raw_os_error() == Some(231) => {
+                                // All pipe instances busy → wait and retry
+
+                                use std::time::Duration;
+
+                                eprintln!("All pipe instances busy, retrying...");
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                continue;
+                            }
+                            Err(e) => panic!("Failed to connect to pipe: {}", e),
+                        };
+                        break res;
+                    }
                 }
             };
 
