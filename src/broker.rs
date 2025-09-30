@@ -12,7 +12,7 @@ use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 // Your RPC types
-use crate::client::BUF_SIZE;
+use crate::rpc::{BUF_SIZE, TCP_ADDR};
 use crate::rpc::{CallId, ClientId, RpcRequest, RpcResponse};
 
 /// Shared broker state
@@ -389,8 +389,8 @@ async fn start_tcp_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) -> std::io::Result<()> {
-    let tcp_listener = TcpListener::bind("0.0.0.0:5000").await?;
-    println!("Broker listening on TCP 0.0.0.0:5000");
+    let tcp_listener = TcpListener::bind(TCP_ADDR).await?;
+    println!("Broker listening on TCP {TCP_ADDR}");
 
     tokio::spawn(async move {
         loop {
@@ -419,9 +419,11 @@ async fn start_unix_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) -> std::io::Result<()> {
-    let _ = std::fs::remove_file("/tmp/ipc_broker.sock"); // cleanup old
-    let unix_listener = UnixListener::bind("/tmp/ipc_broker.sock")?;
-    println!("Broker also listening on /tmp/ipc_broker.sock");
+    use crate::rpc::UNIX_PATH;
+
+    let _ = std::fs::remove_file(UNIX_PATH); // cleanup old
+    let unix_listener = UnixListener::bind(UNIX_PATH)?;
+    println!("Broker also listening on {UNIX_PATH}");
 
     tokio::spawn(async move {
         loop {
@@ -450,14 +452,14 @@ fn start_named_pipe_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) {
-    let pipe_name = r"\\.\pipe\ipc_broker";
-    println!("Broker also listening on named pipe {pipe_name}");
+    use crate::rpc::PIPE_PATH;
+    println!("Broker also listening on named pipe {PIPE_PATH}");
 
     tokio::spawn(async move {
         loop {
             let server = match ServerOptions::new()
                 .first_pipe_instance(false) // multiple instances
-                .create(pipe_name)
+                .create(PIPE_PATH)
             {
                 Ok(s) => s,
                 Err(e) => {
