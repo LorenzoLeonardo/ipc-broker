@@ -23,6 +23,7 @@ enum ClientMsg {
         resp_tx: oneshot::Sender<std::io::Result<RpcResponse>>,
     },
     Subscribe {
+        object_name: String,
         topic: String,
         updates: mpsc::UnboundedSender<serde_json::Value>,
     },
@@ -82,7 +83,7 @@ impl ClientHandle {
             let mut stream = stream;
             let mut buf = vec![0u8; BUF_SIZE];
             let mut subs: std::collections::HashMap<
-                String,
+                (String, String),
                 Vec<mpsc::UnboundedSender<serde_json::Value>>,
             > = std::collections::HashMap::new();
             let mut leftover = Vec::new();
@@ -137,19 +138,20 @@ impl ClientHandle {
                                     RpcRequest::Publish { .. } | RpcRequest::Subscribe { .. } => {
                                         // Fire-and-forget: do not await a response
                                         let _ = resp_tx.send(Ok(RpcResponse::Event {
+                                            object_name: "".into(),
                                             topic: "".into(),
                                             args: serde_json::Value::Null,
                                         }));
                                     }
                                 }
                             }
-                            ClientMsg::Subscribe { topic, updates } => {
-                                println!("Client subscribing to topic: {topic}");
-                                subs.entry(topic.clone())
+                            ClientMsg::Subscribe { object_name, topic, updates } => {
+                                println!("Client subscribing to {object_name}/{topic}");
+                                subs.entry((object_name.clone(), topic.clone()))
                                     .or_default()
                                     .push(updates);
                                 let _ = stream.write_all(
-                                    &serde_json::to_vec(&RpcRequest::Subscribe { topic }).unwrap()
+                                    &serde_json::to_vec(&RpcRequest::Subscribe { object_name, topic }).unwrap()
                                 ).await;
                             }
 
@@ -172,8 +174,8 @@ impl ClientHandle {
                                     slice = &slice[consumed..];
                                     println!("Chunk {resp:?}");
                                     // Handle Publish notifications
-                                    if let RpcResponse::Event { topic, args } = resp {
-                                        if let Some(subscribers) = subs.get(&topic) {
+                                    if let RpcResponse::Event { object_name, topic, args } = resp {
+                                        if let Some(subscribers) = subs.get(&(object_name.clone(), topic.clone())) {
                                             for tx in subscribers {
                                                 let _ = tx.send(args.clone());
                                             }
@@ -232,10 +234,16 @@ impl ClientHandle {
         })
     }
 
-    pub async fn publish(&self, topic: &str, args: &serde_json::Value) -> std::io::Result<()> {
+    pub async fn publish(
+        &self,
+        object: &str,
+        topic: &str,
+        args: &serde_json::Value,
+    ) -> std::io::Result<()> {
         let (resp_tx, _resp_rx) = oneshot::channel();
         let msg = ClientMsg::Request {
             req: RpcRequest::Publish {
+                object_name: object.into(),
                 topic: topic.into(),
                 args: args.clone(),
             },
@@ -247,16 +255,21 @@ impl ClientHandle {
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))
     }
 
-    pub async fn subscribe(&self, topic: &str) -> mpsc::UnboundedReceiver<serde_json::Value> {
+    pub async fn subscribe(
+        &self,
+        object: &str,
+        topic: &str,
+    ) -> mpsc::UnboundedReceiver<serde_json::Value> {
         let (tx_updates, rx_updates) = mpsc::unbounded_channel();
         let _ = self.tx.send(ClientMsg::Subscribe {
+            object_name: object.into(),
             topic: topic.into(),
             updates: tx_updates,
         });
         rx_updates
     }
 
-    pub async fn subscribe_async<F>(&self, topic: &str, callback: F)
+    pub async fn subscribe_async<F>(&self, object: &str, topic: &str, callback: F)
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
@@ -265,6 +278,7 @@ impl ClientHandle {
 
         // Tell the actor to subscribe
         let _ = self.tx.send(ClientMsg::Subscribe {
+            object_name: object.into(),
             topic: topic.into(),
             updates: tx,
         });

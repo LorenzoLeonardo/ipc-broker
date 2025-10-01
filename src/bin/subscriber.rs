@@ -5,13 +5,13 @@ async fn main() -> std::io::Result<()> {
     let client = ClientHandle::connect().await?;
 
     client
-        .subscribe_async("news", |value| {
+        .subscribe_async("object_name", "news", |value| {
             println!("[News] Received: {value:?}");
         })
         .await;
 
     client
-        .subscribe_async("news1", |value| {
+        .subscribe_async("object_name", "news1", |value| {
             println!("[News1] Received: {value:?}");
         })
         .await;
