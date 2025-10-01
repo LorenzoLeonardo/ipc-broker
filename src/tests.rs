@@ -189,6 +189,7 @@ async fn tcp_stress_broker() {
                     }
                     "subscribe" => {
                         let req = RpcRequest::Subscribe {
+                            object_name: my_object.clone(),
                             topic: format!("topic_{}", i % 10),
                         };
                         let _ = timeout(
@@ -199,6 +200,7 @@ async fn tcp_stress_broker() {
                     }
                     "publish" => {
                         let req = RpcRequest::Publish {
+                            object_name: my_object.clone(),
                             topic: format!("topic_{}", i % 10),
                             args: json!({"val": rng.next_u32()}),
                         };
@@ -273,6 +275,7 @@ async fn unix_stress_broker() {
                     }
                     "subscribe" => {
                         let req = RpcRequest::Subscribe {
+                            object_name: my_object.clone(),
                             topic: format!("topic_{}", i % 10),
                         };
                         let _ = timeout(
@@ -283,6 +286,7 @@ async fn unix_stress_broker() {
                     }
                     "publish" => {
                         let req = RpcRequest::Publish {
+                            object_name: my_object.clone(),
                             topic: format!("topic_{}", i % 10),
                             args: json!({"val": rng.next_u32()}),
                         };
@@ -359,6 +363,7 @@ async fn pipe_stress_broker() {
                     }
                     "subscribe" => {
                         let req = RpcRequest::Subscribe {
+                            object_name: my_object.clone(),
                             topic: format!("topic_{}", i % 10),
                         };
                         let _ = timeout(
@@ -369,6 +374,7 @@ async fn pipe_stress_broker() {
                     }
                     "publish" => {
                         let req = RpcRequest::Publish {
+                            object_name: my_object.clone(),
                             topic: format!("topic_{}", i % 10),
                             args: json!({"val": rng.next_u32()}),
                         };
@@ -499,7 +505,7 @@ async fn publish_subscribe() {
 
         let inner_news_val = Arc::clone(&news_val_for_task);
         client
-            .subscribe_async("news", move |value| {
+            .subscribe_async("news_obj", "news", move |value| {
                 let inner_news_val = Arc::clone(&inner_news_val);
                 tokio::spawn(async move {
                     let mut val = inner_news_val.lock().await;
@@ -510,7 +516,7 @@ async fn publish_subscribe() {
 
         let inner_news1_val = Arc::clone(&news1_val_for_task);
         client
-            .subscribe_async("news1", move |value| {
+            .subscribe_async("news_obj", "news1", move |value| {
                 let inner_news1_val = Arc::clone(&inner_news1_val);
                 tokio::spawn(async move {
                     let mut val = inner_news1_val.lock().await;
@@ -531,11 +537,15 @@ async fn publish_subscribe() {
     let proxy = ClientHandle::connect().await.unwrap();
 
     proxy
-        .publish("news", &json!({"headline": "Rust broker eventing works!"}))
+        .publish(
+            "news_obj",
+            "news",
+            &json!({"headline": "Rust broker eventing works!"}),
+        )
         .await
         .unwrap();
     proxy
-        .publish("news1", &json!({"headline": "Another news!"}))
+        .publish("news_obj", "news1", &json!({"headline": "Another news!"}))
         .await
         .unwrap();
 

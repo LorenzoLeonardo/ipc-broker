@@ -25,9 +25,11 @@ pub enum RpcRequest {
         args: serde_json::Value,
     },
     Subscribe {
+        object_name: String,
         topic: String,
     },
     Publish {
+        object_name: String,
         topic: String,
         args: serde_json::Value,
     },
@@ -51,10 +53,12 @@ pub enum RpcResponse {
         message: String,
     },
     Event {
+        object_name: String,
         topic: String,
         args: serde_json::Value,
     },
     Subscribed {
+        object_name: String,
         topic: String,
     },
     HasObjectResult {

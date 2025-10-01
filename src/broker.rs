@@ -19,7 +19,7 @@ use crate::rpc::{CallId, ClientId, RpcRequest, RpcResponse};
 type ClientSender = mpsc::UnboundedSender<ClientMsg>;
 type SharedClients = Arc<Mutex<HashMap<ClientId, ClientSender>>>;
 type SharedObjects = Arc<Mutex<HashMap<String, ClientId>>>;
-type SharedSubscriptions = Arc<Mutex<HashMap<String, HashSet<ClientId>>>>;
+type SharedSubscriptions = Arc<Mutex<HashMap<String, HashMap<String, HashSet<ClientId>>>>>;
 type SharedCalls = Arc<Mutex<HashMap<CallId, ClientId>>>;
 
 /// Message to a client actor
@@ -104,8 +104,10 @@ where
 
         // Remove subscriptions
         let mut subs = subscriptions.lock().await;
-        for subs_set in subs.values_mut() {
-            subs_set.remove(client_id);
+        for topic_map in subs.values_mut() {
+            for subs_set in topic_map.values_mut() {
+                subs_set.remove(client_id);
+            }
         }
 
         // Remove calls where this client was caller
@@ -233,12 +235,16 @@ impl ServerState {
                     .await;
             }
 
-            RpcRequest::Subscribe { topic } => {
-                self.handle_subscribe(topic, client_id).await;
+            RpcRequest::Subscribe { object_name, topic } => {
+                self.handle_subscribe(object_name, topic, client_id).await;
             }
 
-            RpcRequest::Publish { topic, args } => {
-                self.handle_publish(topic, args).await;
+            RpcRequest::Publish {
+                object_name,
+                topic,
+                args,
+            } => {
+                self.handle_publish(object_name, topic, args).await;
             }
 
             RpcRequest::HasObject { object_name } => {
@@ -320,30 +326,34 @@ impl ServerState {
         }
     }
 
-    async fn handle_subscribe(&self, topic: String, client_id: &ClientId) {
-        println!("Client {client_id:?} subscribing to topic '{topic}'");
+    async fn handle_subscribe(&self, object_name: String, topic: String, client_id: &ClientId) {
+        println!("Client {client_id:?} subscribing to {object_name}/{topic}");
         self.subscriptions
             .lock()
             .await
+            .entry(object_name.clone())
+            .or_default()
             .entry(topic.clone())
             .or_default()
             .insert(client_id.clone());
 
-        let resp = RpcResponse::Subscribed { topic };
+        let resp = RpcResponse::Subscribed { object_name, topic };
         Self::send_to_client(&self.clients, client_id, &resp).await;
     }
 
-    async fn handle_publish(&self, topic: String, args: serde_json::Value) {
+    async fn handle_publish(&self, object_name: String, topic: String, args: serde_json::Value) {
         let subs_list = {
             let subs_guard = self.subscriptions.lock().await;
             subs_guard
-                .get(&topic)
+                .get(&object_name)
+                .and_then(|m| m.get(&topic))
                 .map(|s| s.iter().cloned().collect::<Vec<_>>())
                 .unwrap_or_default()
         };
 
         if !subs_list.is_empty() {
             let event = RpcResponse::Event {
+                object_name: object_name.clone(),
                 topic: topic.clone(),
                 args,
             };
