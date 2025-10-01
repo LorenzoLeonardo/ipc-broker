@@ -65,7 +65,7 @@ impl ClientHandle {
                                 use std::time::Duration;
 
                                 eprintln!("All pipe instances busy, retrying...");
-                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                tokio::time::sleep(Duration::from_millis(1000)).await;
                                 continue;
                             }
                             Err(e) => panic!("Failed to connect to pipe: {}", e),

@@ -23,7 +23,7 @@ use crate::{
     broker::run_broker,
     client::ClientHandle,
     rpc::{CallId, RpcRequest, RpcResponse},
-    worker::{SharedObject, run_worker},
+    worker::{SharedObject, WorkerBuilder},
 };
 
 // Stress test parameters (reduced slightly to avoid CI flakiness)
@@ -414,10 +414,6 @@ async fn client_worker() {
 
     #[async_trait]
     impl SharedObject for Calculator {
-        fn name(&self) -> &str {
-            "Calculator"
-        }
-
         async fn call(&self, method: &str, args: &Value) -> Value {
             match method {
                 "add" => {
@@ -435,9 +431,25 @@ async fn client_worker() {
         }
     }
 
+    struct Logger;
+    #[async_trait]
+    impl SharedObject for Logger {
+        async fn call(&self, method: &str, args: &Value) -> Value {
+            println!("LOG: {method} -> {args}");
+            Value::Null
+        }
+    }
+
     tokio::spawn(async move {
         // IMPORTANT: ensure run_worker signals readiness
-        if let Err(e) = run_worker(Calculator).await {
+        let calc = Calculator;
+        let logger = Logger;
+        if let Err(e) = WorkerBuilder::new()
+            .add("Calculator", calc)
+            .add("Logger", logger)
+            .spawn()
+            .await
+        {
             eprintln!("worker exited early: {e:?}");
         }
     });

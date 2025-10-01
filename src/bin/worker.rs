@@ -1,15 +1,11 @@
 use async_trait::async_trait;
-use ipc_broker::worker::{SharedObject, run_worker};
+use ipc_broker::worker::{SharedObject, WorkerBuilder};
 use serde_json::Value;
 
 pub struct Calculator;
 
 #[async_trait]
 impl SharedObject for Calculator {
-    fn name(&self) -> &str {
-        "Calculator"
-    }
-
     async fn call(&self, method: &str, args: &Value) -> Value {
         match method {
             "add" => {
@@ -27,11 +23,25 @@ impl SharedObject for Calculator {
     }
 }
 
+struct Logger;
+#[async_trait]
+impl SharedObject for Logger {
+    async fn call(&self, method: &str, args: &Value) -> Value {
+        println!("LOG: {method} -> {args}");
+        Value::Null
+    }
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let calc = Calculator;
+    let logger = Logger;
 
-    run_worker(calc).await?;
+    WorkerBuilder::new()
+        .add("Calculator", calc)
+        .add("Logger", logger)
+        .spawn()
+        .await?;
 
     Ok(())
 }
