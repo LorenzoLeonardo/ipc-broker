@@ -1,3 +1,19 @@
+//! # RPC Broker
+//!
+//! This module implements a lightweight, async RPC broker using Tokio.  
+//!
+//! The broker acts as a message hub where multiple clients can:
+//! - Register objects (services).
+//! - Call methods on remote objects.
+//! - Subscribe and publish events.
+//! - Exchange request/response messages across TCP, Unix sockets, or Windows named pipes.
+//!
+//! ## Features
+//! - Supports multiple transports: TCP, Unix domain sockets, Windows named pipes.
+//! - Handles client lifecycle, cleanup, and error handling.
+//! - Implements an **actor model** per client for safe concurrent message processing.
+//! - Provides subscription-based event distribution.
+//!
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -11,29 +27,57 @@ use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
-// Your RPC types
+// RPC protocol types
 use crate::rpc::{BUF_SIZE, TCP_ADDR};
 use crate::rpc::{CallId, ClientId, RpcRequest, RpcResponse};
 
-/// Shared broker state
+/// Type alias for the message channel used by each client actor.
 type ClientSender = mpsc::UnboundedSender<ClientMsg>;
+
+/// Shared registry of active clients.
 type SharedClients = Arc<Mutex<HashMap<ClientId, ClientSender>>>;
+
+/// Shared registry of registered objects (service name → client owner).
 type SharedObjects = Arc<Mutex<HashMap<String, ClientId>>>;
+
+/// Shared subscription state:
+/// `object_name -> topic -> set of subscribers`.
 type SharedSubscriptions = Arc<Mutex<HashMap<String, HashMap<String, HashSet<ClientId>>>>>;
+
+/// Shared in-flight call map (call ID → original caller client).
 type SharedCalls = Arc<Mutex<HashMap<CallId, ClientId>>>;
 
-/// Message to a client actor
+/// Message sent to a client actor.
+///
+/// This is the unit of communication used internally between the broker and
+/// client-handling tasks.
 #[derive(Debug)]
 enum ClientMsg {
+    /// Outgoing serialized bytes to be written to the client.
     Outgoing(Vec<u8>),
+    /// Signal to shutdown the client writer loop.
     _Shutdown,
 }
 
-/// Trait alias for supported stream types
+/// Trait alias for supported asynchronous transport streams.
+///
+/// This includes:
+/// - TCP streams
+/// - Unix domain sockets
+/// - Windows named pipes
 trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
-/// Actor that owns a client connection
+/// Represents the per-client actor that owns the client connection.
+///
+/// Each client is assigned:
+/// - A unique [`ClientId`].
+/// - A read/write stream.
+/// - A channel receiver for outbound messages.
+/// - References to shared broker state.
+///
+/// The actor spawns independent read/write loops and ensures client cleanup
+/// when disconnected.
 struct ClientActor<S> {
     client_id: ClientId,
     stream: S,
@@ -49,6 +93,10 @@ impl<S> ClientActor<S>
 where
     S: Stream + 'static,
 {
+    /// Main loop for the client actor.
+    ///
+    /// Spawns a reader task and runs the writer loop. Cleans up the client
+    /// state once the connection closes.
     async fn run(self) {
         let (reader, mut writer) = tokio::io::split(self.stream);
         let client_id = self.client_id.clone();
@@ -86,6 +134,11 @@ where
         println!("Actor ended for {client_id:?}");
     }
 
+    /// Cleans up broker state when a client disconnects:
+    /// - Removes the client from the clients registry.
+    /// - Removes objects owned by the client.
+    /// - Removes subscriptions from the client.
+    /// - Cleans up any pending calls.
     async fn cleanup_client(
         client_id: &ClientId,
         clients: &SharedClients,
@@ -115,6 +168,8 @@ where
         c.retain(|_, caller| caller != client_id);
     }
 
+    /// Reads messages from the client stream, parses JSON, and dispatches them
+    /// as [`RpcRequest`] or [`RpcResponse`] to the broker [`ServerState`].
     async fn reader_loop<R>(
         mut reader: R,
         client_id: ClientId,
@@ -177,6 +232,11 @@ where
         }
     }
 
+    /// Writer loop for sending outbound messages to the client.
+    ///
+    /// Waits for:
+    /// - Outgoing messages on the channel.
+    /// - A shutdown signal from the reader task.
     async fn writer_loop<W>(
         writer: &mut W,
         client_id: ClientId,
@@ -209,6 +269,14 @@ where
     }
 }
 
+/// Shared broker state.
+///
+/// This is cloned into each client actor and used to manage shared resources
+/// such as:
+/// - Registered objects.
+/// - Connected clients.
+/// - Subscriptions.
+/// - Pending calls.
 #[derive(Clone)]
 struct ServerState {
     objects: SharedObjects,
@@ -218,7 +286,8 @@ struct ServerState {
 }
 
 impl ServerState {
-    /// Dispatch logic for RpcRequest
+    /// Handles incoming RPC requests from clients and routes them to the
+    /// appropriate handler.
     async fn handle_request(&self, req: RpcRequest, client_id: &ClientId) {
         match req {
             RpcRequest::RegisterObject { object_name } => {
@@ -258,7 +327,7 @@ impl ServerState {
         }
     }
 
-    /// Dispatch logic for RpcResponse
+    /// Handles RPC responses, routing them back to the original caller.
     async fn handle_response(&self, resp: RpcResponse, _from: &ClientId) {
         match &resp {
             RpcResponse::Result { call_id, .. }
@@ -281,6 +350,7 @@ impl ServerState {
         }
     }
 
+    /// Registers an object owned by a client.
     async fn handle_register_object(&self, object_name: String, client_id: &ClientId) {
         self.objects
             .lock()
@@ -291,6 +361,8 @@ impl ServerState {
         Self::send_to_client(&self.clients, client_id, &resp).await;
     }
 
+    /// Forwards a call to the object’s owning client, or responds with an error
+    /// if the object does not exist.
     async fn handle_call(
         &self,
         call_id: CallId,
@@ -326,6 +398,7 @@ impl ServerState {
         }
     }
 
+    /// Subscribes a client to a topic under a given object.
     async fn handle_subscribe(&self, object_name: String, topic: String, client_id: &ClientId) {
         println!("Client {client_id:?} subscribing to {object_name}/{topic}");
         self.subscriptions
@@ -341,6 +414,7 @@ impl ServerState {
         Self::send_to_client(&self.clients, client_id, &resp).await;
     }
 
+    /// Publishes an event to all subscribed clients.
     async fn handle_publish(&self, object_name: String, topic: String, args: serde_json::Value) {
         let subs_list = {
             let subs_guard = self.subscriptions.lock().await;
@@ -374,6 +448,7 @@ impl ServerState {
         }
     }
 
+    /// Utility to send a serialized message to a client.
     async fn send_to_client<T: serde::Serialize>(
         clients: &SharedClients,
         client_id: &ClientId,
@@ -393,6 +468,7 @@ impl ServerState {
     }
 }
 
+/// Start a TCP listener for incoming broker connections.
 async fn start_tcp_listener(
     objects: SharedObjects,
     clients: SharedClients,
@@ -423,6 +499,9 @@ async fn start_tcp_listener(
 }
 
 #[cfg(unix)]
+/// Start a Unix domain socket listener for incoming broker connections.
+///
+/// This is only available on Unix systems.
 async fn start_unix_listener(
     objects: SharedObjects,
     clients: SharedClients,
@@ -456,6 +535,9 @@ async fn start_unix_listener(
 }
 
 #[cfg(windows)]
+/// Start a Windows named pipe listener for incoming broker connections.
+///
+/// This is only available on Windows systems.
 fn start_named_pipe_listener(
     objects: SharedObjects,
     clients: SharedClients,
@@ -494,6 +576,9 @@ fn start_named_pipe_listener(
     });
 }
 
+/// Spawns a new client actor from a given stream.
+///
+/// Each client is assigned a unique [`ClientId`].
 fn spawn_client<S>(
     stream: S,
     objects: SharedObjects,
@@ -527,6 +612,12 @@ fn spawn_client<S>(
     tokio::spawn(actor.run());
 }
 
+/// Entry point for running the broker.
+///
+/// This function:
+/// - Initializes shared state.
+/// - Starts transport listeners (TCP + Unix/Named Pipes).
+/// - Waits for `Ctrl+C` to gracefully shut down the broker.
 pub async fn run_broker() -> std::io::Result<()> {
     let objects: SharedObjects = Arc::new(Mutex::new(HashMap::new()));
     let clients: SharedClients = Arc::new(Mutex::new(HashMap::new()));
