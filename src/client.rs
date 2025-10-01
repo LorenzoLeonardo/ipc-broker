@@ -13,15 +13,23 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::rpc::{BUF_SIZE, CallId, RpcRequest, RpcResponse};
+
+/// A trait alias for any asynchronous stream type
+/// that implements both [`AsyncRead`] and [`AsyncWrite`].
 pub trait AsyncStream: AsyncRead + AsyncWrite {}
 impl<T: AsyncRead + AsyncWrite + Unpin> AsyncStream for T {}
 
-/// Request from a handle to the client actor
+/// Internal message sent to the client actor.
+///
+/// This is used to decouple the `ClientHandle` (public API)
+/// from the background task that drives I/O with the server.
 enum ClientMsg {
+    /// Request a remote procedure call, expecting a response.
     Request {
         req: RpcRequest,
         resp_tx: oneshot::Sender<std::io::Result<RpcResponse>>,
     },
+    /// Subscribe to a publish/subscribe topic on a remote object.
     Subscribe {
         object_name: String,
         topic: String,
@@ -29,12 +37,26 @@ enum ClientMsg {
     },
 }
 
+/// A handle to a client connection.
+///
+/// This is the main entrypoint for making RPC calls,
+/// publishing events, or subscribing to topics.
+/// Internally it communicates with a background task (the “client actor”)
+/// that manages the network connection.
 #[derive(Clone)]
 pub struct ClientHandle {
     tx: mpsc::UnboundedSender<ClientMsg>,
 }
 
 impl ClientHandle {
+    /// Connect to the broker and spawn the client actor.
+    ///
+    /// - If `BROKER_ADDR` environment variable is set, it connects via TCP.
+    /// - Otherwise it attempts local IPC:
+    ///   - On Unix: connects to a Unix socket at `rpc::UNIX_PATH`.
+    ///   - On Windows: connects to a named pipe at `rpc::PIPE_PATH`.
+    ///
+    /// Returns a [`ClientHandle`] that can be used to issue requests.
     pub async fn connect() -> std::io::Result<Self> {
         // Pick transport
         let stream: Box<dyn AsyncStream + Send + Unpin> =
@@ -207,6 +229,14 @@ impl ClientHandle {
         Ok(Self { tx })
     }
 
+    /// Call a method on a remote object.
+    ///
+    /// - `object`: name of the remote object.
+    /// - `method`: method name.
+    /// - `args`: JSON arguments.
+    ///
+    /// Returns the deserialized [`RpcResponse`] or an error if
+    /// the call failed or connection was lost.
     pub async fn remote_call(
         &self,
         object: &str,
@@ -239,6 +269,9 @@ impl ClientHandle {
         })
     }
 
+    /// Publish an event to a remote object/topic.
+    ///
+    /// Unlike [`remote_call`], this is fire-and-forget: no response is awaited.
     pub async fn publish(
         &self,
         object: &str,
@@ -260,6 +293,10 @@ impl ClientHandle {
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))
     }
 
+    /// Subscribe to events from a remote object/topic.
+    ///
+    /// Returns an [`mpsc::UnboundedReceiver`] where updates
+    /// will be delivered as `serde_json::Value`.
     pub async fn subscribe(
         &self,
         object: &str,
@@ -274,6 +311,10 @@ impl ClientHandle {
         rx_updates
     }
 
+    /// Subscribe asynchronously with a callback.
+    ///
+    /// Spawns a background task that invokes `callback` whenever
+    /// a new event is received on the subscription.
     pub async fn subscribe_async<F>(&self, object: &str, topic: &str, callback: F)
     where
         F: Fn(Value) + Send + Sync + 'static,
@@ -298,6 +339,9 @@ impl ClientHandle {
         });
     }
 
+    /// Wait until a given object exists on the server.
+    ///
+    /// This polls periodically using [`has_object`] until success.
     pub async fn wait_for_object(&self, object: &str) -> std::io::Result<()> {
         loop {
             if self.has_object(object).await? {
@@ -307,6 +351,9 @@ impl ClientHandle {
         }
     }
 
+    /// Check whether a remote object exists.
+    ///
+    /// Returns `Ok(true)` if the object is present, `Ok(false)` otherwise.
     async fn has_object(&self, object: &str) -> std::io::Result<bool> {
         let req = RpcRequest::HasObject {
             object_name: object.into(),
