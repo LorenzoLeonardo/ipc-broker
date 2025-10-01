@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::{Deserializer, Value};
+use std::{collections::HashMap, sync::Arc};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 #[cfg(windows)]
@@ -17,13 +18,42 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncStream for T {}
 /// Trait for a worker object that can handle RPC calls
 #[async_trait]
 pub trait SharedObject: Send + Sync {
-    fn name(&self) -> &str;
-
     async fn call(&self, method: &str, args: &Value) -> Value;
 }
 
-/// Runs a worker that registers a SharedObject with the broker
-pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()> {
+/// Builder to collect objects and spawn a worker
+pub struct WorkerBuilder {
+    objects: HashMap<String, Arc<dyn SharedObject>>,
+}
+
+impl WorkerBuilder {
+    pub fn new() -> Self {
+        Self {
+            objects: HashMap::new(),
+        }
+    }
+
+    pub fn add<T>(mut self, name: &str, obj: T) -> Self
+    where
+        T: SharedObject + 'static,
+    {
+        self.objects.insert(name.to_string(), Arc::new(obj));
+        self
+    }
+
+    pub async fn spawn(self) -> std::io::Result<()> {
+        run_worker(self.objects).await
+    }
+}
+
+impl Default for WorkerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Worker runtime
+async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io::Result<()> {
     let mut stream: Box<dyn AsyncStream + Send + Unpin> =
         if let Ok(ip) = std::env::var("BROKER_ADDR") {
             let tcp = TcpStream::connect(ip.as_str()).await?;
@@ -33,7 +63,6 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
             #[cfg(unix)]
             {
                 use crate::rpc::UNIX_PATH;
-
                 let unix = UnixStream::connect(UNIX_PATH).await?;
                 println!("Client connected via Unix socket");
                 Box::new(unix)
@@ -46,15 +75,17 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
                     let res = match ClientOptions::new().open(PIPE_PATH) {
                         Ok(pipe) => Box::new(pipe),
                         Err(e) if e.raw_os_error() == Some(231) => {
-                            // All pipe instances busy → wait and retry
-
                             use std::time::Duration;
-
                             eprintln!("All pipe instances busy, retrying...");
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             continue;
                         }
-                        Err(e) => panic!("Failed to connect to pipe: {}", e),
+                        Err(e) => {
+                            use std::time::Duration;
+                            eprintln!("Failed to connect to pipe: {}", e);
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        }
                     };
                     println!("Client connected via Named Pipe: {PIPE_PATH}");
                     break res;
@@ -62,11 +93,13 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
             }
         };
 
-    // Register object
-    let reg = RpcRequest::RegisterObject {
-        object_name: obj.name().into(),
-    };
-    stream.write_all(&serde_json::to_vec(&reg).unwrap()).await?;
+    // Register all objects
+    for name in objects.keys() {
+        let reg = RpcRequest::RegisterObject {
+            object_name: name.clone(),
+        };
+        stream.write_all(&serde_json::to_vec(&reg).unwrap()).await?;
+    }
 
     let mut buf = Vec::new();
     let mut tmp = vec![0u8; BUF_SIZE];
@@ -78,7 +111,6 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
         }
         buf.extend_from_slice(&tmp[..n]);
 
-        // keep extracting JSON messages until nothing left to parse
         loop {
             let mut de = Deserializer::from_slice(&buf).into_iter::<serde_json::Value>();
 
@@ -94,17 +126,24 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
                                 method,
                                 args,
                             } => {
-                                println!("Worker handling {method}({args})");
-                                let result = obj.call(&method, &args).await;
+                                if let Some(obj) = objects.get(&object_name) {
+                                    println!(
+                                        "Worker handling {}.{}({})",
+                                        object_name, method, args
+                                    );
+                                    let result = obj.call(&method, &args).await;
 
-                                let resp = RpcResponse::Result {
-                                    call_id,
-                                    object_name,
-                                    value: result,
-                                };
+                                    let resp = RpcResponse::Result {
+                                        call_id,
+                                        object_name,
+                                        value: result,
+                                    };
 
-                                let resp_bytes = serde_json::to_vec(&resp).unwrap();
-                                stream.write_all(&resp_bytes).await?;
+                                    let resp_bytes = serde_json::to_vec(&resp).unwrap();
+                                    stream.write_all(&resp_bytes).await?;
+                                } else {
+                                    eprintln!("Unknown object: {}", object_name);
+                                }
                             }
                             _ => {
                                 println!("Worker got unsupported request: {req:?}");
@@ -114,16 +153,11 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
                         println!("Worker got response: {resp:?}");
                     }
 
-                    // remove parsed bytes and keep looping
                     buf.drain(..consumed);
                 }
-                Some(Err(e)) if e.is_eof() => {
-                    // partial JSON, wait for more data
-                    break;
-                }
+                Some(Err(e)) if e.is_eof() => break,
                 Some(Err(e)) => {
                     eprintln!("JSON parse error: {e:?}");
-                    // skip bad data
                     buf.clear();
                     break;
                 }
@@ -131,6 +165,5 @@ pub async fn run_worker(obj: impl SharedObject + 'static) -> std::io::Result<()>
             }
         }
     }
-
     Ok(())
 }
