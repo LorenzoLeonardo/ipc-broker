@@ -350,7 +350,7 @@ async fn pipe_stress_broker() {
                 match op_type {
                     "call" => {
                         let req = RpcRequest::Call {
-                            call_id: CallId(Uuid::new_v4().to_string()),
+                            call_id: CallId::from(Uuid::new_v4()),
                             object_name: my_object.clone(),
                             method: "echo".into(),
                             args: json!({"msg": format!("hello from client {i}")}),
@@ -462,41 +462,25 @@ async fn client_worker() {
         .expect("wait_for_object failed");
 
     let response = proxy
-        .remote_call("Calculator", "add", &json!([5, 7]))
+        .remote_call::<i32>("Calculator", "add", &json!([5, 7]))
         .await
         .unwrap();
-    println!("Client got response: {response:?}");
-    if let RpcResponse::Result {
-        call_id: _,
-        object_name,
-        value,
-    } = response
-    {
-        assert_eq!(object_name, "Calculator");
-        assert_eq!(value, json!(12));
-    } else {
-        panic!("expected Result response");
-    }
+    println!("Client got response: {response}");
+    assert_eq!(response, 12);
 
-    let response = timeout(
-        Duration::from_secs(5),
-        proxy.remote_call("Calculator", "mul", &json!([5, 7])),
-    )
-    .await
-    .expect("call mul timed out")
-    .unwrap();
-    println!("Client got response: {response:?}");
-    if let RpcResponse::Result {
-        call_id: _,
-        object_name,
-        value,
-    } = response
-    {
-        assert_eq!(object_name, "Calculator");
-        assert_eq!(value, json!(35));
-    } else {
-        panic!("expected Result response");
-    }
+    let response = proxy
+        .remote_call::<i32>("Calculator", "mul", &json!([5, 7]))
+        .await
+        .unwrap();
+    println!("Client got response: {response}");
+    assert_eq!(response, 35);
+
+    let response = proxy
+        .remote_call::<Value>("Logger", "method", &Value::Null)
+        .await
+        .unwrap();
+    println!("Client got response: {response}");
+    assert_eq!(response, Value::Null);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
