@@ -144,14 +144,12 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
     let mut stream: Box<dyn AsyncStream + Send + Unpin> =
         if let Ok(ip) = std::env::var("BROKER_ADDR") {
             let tcp = TcpStream::connect(ip.as_str()).await?;
-            println!("Client connected via TCP");
             Box::new(tcp)
         } else {
             #[cfg(unix)]
             {
                 use crate::rpc::UNIX_PATH;
                 let unix = UnixStream::connect(UNIX_PATH).await?;
-                println!("Client connected via Unix socket");
                 Box::new(unix)
             }
 
