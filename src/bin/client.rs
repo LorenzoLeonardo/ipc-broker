@@ -9,18 +9,20 @@ async fn main() -> std::io::Result<()> {
     proxy.wait_for_object("Calculator").await?;
 
     let response = proxy
-        .remote_call("Calculator", "add", &json!([5, 7]))
+        .remote_call::<i32>("Calculator", "add", &json!([5, 7]))
         .await?;
 
     println!("Client got response: {response:?}");
 
     let response = proxy
-        .remote_call("Calculator", "mul", &json!([5, 7]))
+        .remote_call::<i32>("Calculator", "mul", &json!([5, 7]))
         .await?;
 
     println!("Client got response: {response:?}");
 
-    let response = proxy.remote_call("Logger", "log", &Value::Null).await?;
+    let response = proxy
+        .remote_call::<Value>("Logger", "log", &Value::Null)
+        .await?;
 
     println!("Client got response: {response:?}");
 

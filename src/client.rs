@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -237,12 +238,15 @@ impl ClientHandle {
     ///
     /// Returns the deserialized [`RpcResponse`] or an error if
     /// the call failed or connection was lost.
-    pub async fn remote_call(
+    pub async fn remote_call<T>(
         &self,
         object: &str,
         method: &str,
-        args: &serde_json::Value,
-    ) -> std::io::Result<RpcResponse> {
+        args: &Value,
+    ) -> std::io::Result<T>
+    where
+        T: DeserializeOwned,
+    {
         let call_id = CallId::from(Uuid::new_v4());
 
         let req = RpcRequest::Call {
@@ -261,12 +265,29 @@ impl ClientHandle {
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))?;
 
         // Wait for reply
-        resp_rx.await.unwrap_or_else(|_| {
+        let resp = resp_rx.await.unwrap_or_else(|_| {
             Err(std::io::Error::new(
                 std::io::ErrorKind::ConnectionAborted,
                 "Actor task ended",
             ))
-        })
+        })?;
+
+        // Match the RpcResponse
+        match resp {
+            RpcResponse::Result { value, .. } => serde_json::from_value(value).map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Deserialize error: {e}"),
+                )
+            }),
+            RpcResponse::Error { message, .. } => {
+                Err(std::io::Error::other(format!("Remote error: {message}")))
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Unexpected response type",
+            )),
+        }
     }
 
     /// Publish an event to a remote object/topic.
