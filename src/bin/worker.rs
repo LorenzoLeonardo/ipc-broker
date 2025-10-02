@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use ipc_broker::worker::{SharedObject, WorkerBuilder};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub struct Calculator;
@@ -32,14 +33,42 @@ impl SharedObject for Logger {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct Param {
+    name: String,
+    age: u32,
+    phone: String,
+}
+
+impl From<Param> for Value {
+    fn from(val: Param) -> Self {
+        serde_json::to_value(val).unwrap()
+    }
+}
+
+struct TestObject;
+#[async_trait]
+impl SharedObject for TestObject {
+    async fn call(&self, method: &str, args: &Value) -> Value {
+        let param: Param = serde_json::from_value(args.clone()).unwrap();
+        println!(
+            "TestObject: {method} -> {args} -> Name: {} age: {} phone: {}",
+            param.name, param.age, param.phone
+        );
+        param.into()
+    }
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let calc = Calculator;
     let logger = Logger;
+    let test_obj = TestObject;
 
     WorkerBuilder::new()
         .add("Calculator", calc)
         .add("Logger", logger)
+        .add("TestObject", test_obj)
         .spawn()
         .await?;
 
