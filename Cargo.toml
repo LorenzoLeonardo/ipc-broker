@@ -9,6 +9,7 @@ repository = "https://github.com/LorenzoLeonardo/ipc-broker"
 homepage = "https://github.com/LorenzoLeonardo/ipc-broker"
 documentation = "https://docs.rs/ipc-broker"
 readme = "README.md"
+default-run = "ipc-broker"
 
 [dependencies]
 async-trait = "0.1"
