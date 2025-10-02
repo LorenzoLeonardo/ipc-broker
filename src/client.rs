@@ -7,13 +7,16 @@ use tokio::net::UnixStream;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::{mpsc, oneshot},
 };
 use uuid::Uuid;
 
-use crate::rpc::{BUF_SIZE, CallId, RpcRequest, RpcResponse};
+use crate::{
+    broker::{read_packet, write_packet},
+    rpc::{CallId, RpcRequest, RpcResponse},
+};
 
 /// A trait alias for any asynchronous stream type
 /// that implements both [`AsyncRead`] and [`AsyncWrite`].
@@ -107,12 +110,11 @@ impl ClientHandle {
         // Spawn the client actor task
         tokio::spawn(async move {
             let mut stream = stream;
-            let mut buf = vec![0u8; BUF_SIZE];
             let mut subs: std::collections::HashMap<
                 (String, String),
                 Vec<mpsc::UnboundedSender<serde_json::Value>>,
             > = std::collections::HashMap::new();
-            let mut leftover = Vec::new();
+
             loop {
                 tokio::select! {
                     Some(msg) = rx.recv() => {
@@ -126,7 +128,8 @@ impl ClientHandle {
                                         continue;
                                     }
                                 };
-                                if let Err(e) = stream.write_all(&data).await {
+
+                                if let Err(e) = write_packet(&mut stream, &data).await {
                                     let _ = resp_tx.send(Err(e));
                                     continue;
                                 }
@@ -135,16 +138,9 @@ impl ClientHandle {
                                 match req {
                                     RpcRequest::Call { .. } | RpcRequest::RegisterObject { .. } | RpcRequest::HasObject { .. } => {
                                         // Only these expect a response
-                                        match stream.read(&mut buf).await {
-                                            Ok(0) => {
-                                                let _ = resp_tx.send(Err(std::io::Error::new(
-                                                    std::io::ErrorKind::UnexpectedEof,
-                                                    "Connection closed by server",
-                                                )));
-                                                break;
-                                            }
-                                            Ok(n) => {
-                                                let resp: Result<RpcResponse, _> = serde_json::from_slice(&buf[..n]);
+                                        match read_packet(&mut stream).await {
+                                            Ok(data) => {
+                                                let resp: Result<RpcResponse, _> = serde_json::from_slice(&data);
                                                 match resp {
                                                     Ok(r) => { let _ = resp_tx.send(Ok(r)); }
                                                     Err(e) => {
@@ -157,9 +153,8 @@ impl ClientHandle {
                                             }
                                             Err(e) => {
                                                 let _ = resp_tx.send(Err(e));
-                                                break;
                                             }
-                                        }
+                                         }
                                     }
                                     RpcRequest::Publish { .. } | RpcRequest::Subscribe { .. } => {
                                         // Fire-and-forget: do not await a response
@@ -176,50 +171,36 @@ impl ClientHandle {
                                 subs.entry((object_name.clone(), topic.clone()))
                                     .or_default()
                                     .push(updates);
-                                let _ = stream.write_all(
-                                    &serde_json::to_vec(&RpcRequest::Subscribe { object_name, topic }).unwrap()
-                                ).await;
+                                let data = serde_json::to_vec(&RpcRequest::Subscribe { object_name, topic }).unwrap();
+
+                                let _ = write_packet(&mut stream, &data).await;
                             }
 
                         }
                     }
-                    Ok(n) = stream.read(&mut buf) => {
-                        if n == 0 {
+                    Ok(data) = read_packet(&mut stream) => {
+                        if data.is_empty() {
                             break;
                         }
-                        println!("Data {}", String::from_utf8_lossy(&buf[..n]));
-                        // Append new data to leftover
-                        leftover.extend_from_slice(&buf[..n]);
-                        let mut slice = leftover.as_slice();
-
-                        while !slice.is_empty() {
-                            let mut de = serde_json::Deserializer::from_slice(slice).into_iter::<RpcResponse>();
-                            match de.next() {
-                                Some(Ok(resp)) => {
-                                    let consumed = de.byte_offset();
-                                    slice = &slice[consumed..];
-                                    println!("Chunk {resp:?}");
-                                    // Handle Publish notifications
-                                    if let RpcResponse::Event { object_name, topic, args } = resp {
-                                        if let Some(subscribers) = subs.get(&(object_name.clone(), topic.clone())) {
-                                            for tx in subscribers {
-                                                let _ = tx.send(args.clone());
-                                            }
+                        println!("Data {}", String::from_utf8_lossy(&data));
+                        match serde_json::from_slice::<RpcResponse>(&data) {
+                            Ok(resp) => {
+                                // Handle Publish notifications
+                                if let RpcResponse::Event { object_name, topic, args } = resp {
+                                    if let Some(subscribers) = subs.get(&(object_name.clone(), topic.clone())) {
+                                        for tx in subscribers {
+                                            let _ = tx.send(args.clone());
+                                        }
                                     }
-                                    } else {
-                                        // Other responses are ignored here; handled elsewhere
-                                    }
+                                } else{
+                                    // Other responses are ignored here; handled elsewhere
                                 }
-                                Some(Err(_)) => {
-                                    // Partial JSON, wait for more bytes
-                                    break;
-                                }
-                                None => break,
+                                continue;
+                            }
+                            Err(_) => {
+                                panic!("Partial JSON, fallthrough to buffer handling");
                             }
                         }
-
-                        // Keep unconsumed bytes for next read
-                        leftover = slice.to_vec();
                     }
                 }
             }

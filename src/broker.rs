@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{Deserializer, Value};
+use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -29,7 +29,7 @@ use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
 // RPC protocol types
-use crate::rpc::{BUF_SIZE, TCP_ADDR};
+use crate::rpc::TCP_ADDR;
 use crate::rpc::{CallId, ClientId, RpcRequest, RpcResponse};
 use crate::worker::{SharedObject, WorkerBuilder};
 
@@ -70,6 +70,29 @@ enum ClientMsg {
 trait Stream: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
+pub async fn read_packet<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
+    let len = reader.read_u32().await?;
+    println!("Reading packet of length: {len}");
+    let mut buf = vec![0u8; len as usize];
+    reader.read_exact(&mut buf).await?;
+    Ok(buf)
+}
+
+pub async fn write_packet<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    data: &[u8],
+) -> std::io::Result<()> {
+    let len = data.len() as u32;
+    // write length prefix first
+    writer.write_u32(len).await?;
+    println!("Writing packet of length: {len}");
+    // then write actual data
+    writer.write_all(data).await?;
+    // optionally flush to ensure it's sent immediately
+    writer.flush().await?;
+
+    Ok(())
+}
 /// Represents the per-client actor that owns the client connection.
 ///
 /// Each client is assigned:
@@ -182,9 +205,6 @@ where
     ) where
         R: AsyncRead + Unpin,
     {
-        let mut buf = vec![0u8; BUF_SIZE];
-        let mut leftover = Vec::new();
-
         let server_state = ServerState {
             objects,
             clients,
@@ -193,53 +213,23 @@ where
         };
 
         loop {
-            // --- read from client ---
-            let n = match reader.read(&mut buf).await {
-                Ok(0) => {
-                    println!("Client {client_id:?} disconnected");
-                    break;
-                }
-                Ok(n) => n,
-                Err(e) => {
-                    eprintln!("Read error {client_id:?}: {e:?}");
+            let buf = match read_packet(&mut reader).await {
+                Ok(data) => data,
+                Err(err) => {
+                    eprintln!("Read error {client_id}: {err}");
                     break;
                 }
             };
-
-            leftover.extend_from_slice(&buf[..n]);
-
-            // --- parse all complete JSON values ---
-            let mut slice = leftover.as_slice();
-            while let Some((val, consumed)) = Self::parse_json_frame(slice, &client_id) {
-                slice = &slice[consumed..];
-                println!("Received from {client_id:?}: {val}");
-
-                if let Ok(req) = serde_json::from_value::<RpcRequest>(val.clone()) {
-                    server_state.handle_request(req, &client_id).await;
-                } else if let Ok(resp) = serde_json::from_value::<RpcResponse>(val) {
-                    server_state.handle_response(resp, &client_id).await;
-                } else {
-                    eprintln!("Invalid JSON value from {client_id:?}");
-                }
-            }
-
-            // keep leftovers for next read
-            leftover = slice.to_vec();
-        }
-    }
-
-    /// Attempts to parse the next JSON frame from the slice.
-    /// Returns the parsed value and the number of bytes consumed.
-    fn parse_json_frame(slice: &[u8], client_id: &ClientId) -> Option<(serde_json::Value, usize)> {
-        let mut de = Deserializer::from_slice(slice).into_iter::<serde_json::Value>();
-        match de.next()? {
-            Ok(val) => Some((val, de.byte_offset())),
-            Err(_) => {
-                eprintln!("Incomplete JSON from {client_id:?}, waiting for more data");
-                None
+            if let Ok(req) = serde_json::from_slice::<RpcRequest>(&buf) {
+                server_state.handle_request(req, &client_id).await;
+            } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf) {
+                server_state.handle_response(resp, &client_id).await;
+            } else {
+                eprintln!("Invalid JSON value from {client_id:?}");
             }
         }
     }
+
     /// Writer loop for sending outbound messages to the client.
     ///
     /// Waits for:
@@ -261,8 +251,8 @@ where
                 while let Some(msg) = rx.recv().await {
                     match msg {
                         ClientMsg::Outgoing(bytes) => {
-                            if let Err(e) = writer.write_all(&bytes).await {
-                                eprintln!("Write error {client_id:?}: {e:?}");
+                            if let Err(e) =  write_packet(writer, &bytes).await {
+                                eprintln!("Write error {client_id}: {e}");
                                 break;
                             }
                         }
