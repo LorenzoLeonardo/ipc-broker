@@ -99,12 +99,19 @@ async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.len() < 3 {
-        panic!("Usage: rob call <object> <method> [signature] [args...]");
+        eprintln!("Usage: rob call <object> <method> [signature] [args...]");
+        return Ok(());
     }
 
-    let command = args.first().expect("missing command");
-    let object = args.get(1).expect("missing object");
-    let method = args.get(2).expect("missing method");
+    let command = args
+        .first()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing command"))?;
+    let object = args.get(1).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing object name")
+    })?;
+    let method = args.get(2).ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "missing method name")
+    })?;
     let signature = args.get(3).cloned().unwrap_or_default(); // empty if missing
 
     let mut iter = if args.len() > 4 {
@@ -116,21 +123,23 @@ async fn main() -> std::io::Result<()> {
     let parsed_args = if signature.is_empty() {
         serde_json::Value::Null
     } else {
-        parse_signature(&signature, &mut iter).unwrap()
+        parse_signature(&signature, &mut iter).map_err(|e| {
+            println!("Error parsing signature: {e}");
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+        })?
     };
     println!("Parsed args: {parsed_args}");
     // --- pick transport ---
     if command == "call" {
-        let proxy = ClientHandle::connect().await.unwrap();
+        let proxy = ClientHandle::connect().await?;
 
         let response = proxy
             .remote_call::<Value, Value>(object, method, parsed_args)
-            .await
-            .unwrap();
+            .await?;
 
         println!("Result:\n  {}", format_value(&response, 0));
     } else {
-        panic!("Unknown command: {command}");
+        println!("Unknown command: {command}");
     }
     Ok(())
 }
