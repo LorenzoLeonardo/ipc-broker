@@ -10,7 +10,6 @@ use tokio::net::UnixStream;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     runtime::Runtime,
     sync::{Mutex, Notify},
@@ -20,7 +19,7 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    broker::run_broker,
+    broker::{read_packet, run_broker, write_packet},
     client::ClientHandle,
     rpc::{CallId, RpcRequest, RpcResponse},
     worker::{SharedObject, WorkerBuilder},
@@ -128,20 +127,41 @@ impl Conn {
 
     async fn write_all(&mut self, buf: &[u8]) {
         match self {
-            Conn::Tcp(s) => s.write_all(buf).await.unwrap(),
+            Conn::Tcp(s) => {
+                write_packet(s, buf).await.unwrap();
+            }
             #[cfg(unix)]
-            Conn::Unix(s) => s.write_all(buf).await.unwrap(),
+            Conn::Unix(s) => {
+                write_packet(s, buf).await.unwrap();
+            }
             #[cfg(windows)]
-            Conn::Pipe(s) => s.write_all(buf).await.unwrap(),
+            Conn::Pipe(s) => {
+                write_packet(s, buf).await.unwrap();
+            }
         }
     }
-    async fn read_some(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+    async fn read_some(&mut self, buf: &mut Vec<u8>) -> std::io::Result<usize> {
         match self {
-            Conn::Tcp(s) => s.read(buf).await,
+            Conn::Tcp(s) => {
+                let res = read_packet(s).await?;
+                let len = res.len();
+                *buf = res;
+                Ok(len)
+            }
             #[cfg(unix)]
-            Conn::Unix(s) => s.read(buf).await,
+            Conn::Unix(s) => {
+                let res = read_packet(s).await?;
+                let len = res.len();
+                *buf = res;
+                Ok(len)
+            }
             #[cfg(windows)]
-            Conn::Pipe(s) => s.read(buf).await,
+            Conn::Pipe(s) => {
+                let res = read_packet(s).await?;
+                let len = res.len();
+                *buf = res;
+                Ok(len)
+            }
         }
     }
 }
@@ -169,7 +189,7 @@ async fn tcp_stress_broker() {
             conn.write_all(&serde_json::to_vec(&reg).unwrap()).await;
 
             let mut ops_done = 0usize;
-            let mut read_buf = vec![0u8; 65536];
+            let mut read_buf = Vec::new();
 
             while ops_done < OPS_PER_CLIENT {
                 let op_type = *rng.choose(&["call", "subscribe", "publish"]);
@@ -255,7 +275,7 @@ async fn unix_stress_broker() {
             conn.write_all(&serde_json::to_vec(&reg).unwrap()).await;
 
             let mut ops_done = 0usize;
-            let mut read_buf = vec![0u8; 65536];
+            let mut read_buf = Vec::new();
 
             while ops_done < OPS_PER_CLIENT {
                 let op_type = *rng.choose(&["call", "subscribe", "publish"]);
@@ -343,7 +363,7 @@ async fn pipe_stress_broker() {
             conn.write_all(&serde_json::to_vec(&reg).unwrap()).await;
 
             let mut ops_done = 0usize;
-            let mut read_buf = vec![0u8; 65536];
+            let mut read_buf = Vec::new();
 
             while ops_done < OPS_PER_CLIENT {
                 let op_type = *rng.choose(&["call", "subscribe", "publish"]);
