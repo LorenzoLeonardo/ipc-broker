@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -14,6 +16,13 @@ pub struct ClientId(String);
 impl From<Uuid> for ClientId {
     fn from(uuid: Uuid) -> Self {
         ClientId(uuid.to_string())
+    }
+}
+
+impl fmt::Display for ClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Adjust this to however ClientId should be displayed, for example if it wraps a Uuid:
+        write!(f, "{}", self.0)
     }
 }
 
