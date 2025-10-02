@@ -392,6 +392,7 @@ impl ServerState {
         } else {
             let err = RpcResponse::Error {
                 call_id: Some(call_id),
+                object_name: object_name.clone(),
                 message: "No such object".into(),
             };
             Self::send_to_client(&self.clients, client_id, &err).await;
