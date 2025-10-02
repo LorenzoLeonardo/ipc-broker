@@ -63,6 +63,7 @@ pub enum RpcResponse {
     },
     Error {
         call_id: Option<CallId>,
+        object_name: String,
         message: String,
     },
     Event {
