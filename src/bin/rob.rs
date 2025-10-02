@@ -1,14 +1,5 @@
 use ipc_broker::client::ClientHandle;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RpcCall {
-    pub object: String,
-    pub method: String,
-    pub signature: String,
-    pub args: Value,
-}
 
 fn format_value(value: &Value, indent: usize) -> String {
     let padding = " ".repeat(indent);
