@@ -184,13 +184,16 @@ where
     {
         let mut buf = vec![0u8; BUF_SIZE];
         let mut leftover = Vec::new();
+
         let server_state = ServerState {
             objects,
             clients,
             subscriptions,
             calls,
         };
+
         loop {
+            // --- read from client ---
             let n = match reader.read(&mut buf).await {
                 Ok(0) => {
                     println!("Client {client_id:?} disconnected");
@@ -205,35 +208,38 @@ where
 
             leftover.extend_from_slice(&buf[..n]);
 
+            // --- parse all complete JSON values ---
             let mut slice = leftover.as_slice();
-            while !slice.is_empty() {
-                let mut de = Deserializer::from_slice(slice).into_iter::<serde_json::Value>();
-                match de.next() {
-                    Some(Ok(val)) => {
-                        let consumed = de.byte_offset();
-                        slice = &slice[consumed..];
-                        println!("Received from {client_id:?}: {val}");
+            while let Some((val, consumed)) = Self::parse_json_frame(slice, &client_id) {
+                slice = &slice[consumed..];
+                println!("Received from {client_id:?}: {val}");
 
-                        if let Ok(req) = serde_json::from_value::<RpcRequest>(val.clone()) {
-                            server_state.handle_request(req, &client_id).await;
-                        } else if let Ok(resp) = serde_json::from_value::<RpcResponse>(val) {
-                            server_state.handle_response(resp, &client_id).await;
-                        } else {
-                            eprintln!("Invalid JSON value");
-                        }
-                    }
-                    Some(Err(_)) => {
-                        eprintln!("Incomplete JSON from {client_id:?}, waiting for more data");
-                        break;
-                    }
-                    None => break,
+                if let Ok(req) = serde_json::from_value::<RpcRequest>(val.clone()) {
+                    server_state.handle_request(req, &client_id).await;
+                } else if let Ok(resp) = serde_json::from_value::<RpcResponse>(val) {
+                    server_state.handle_response(resp, &client_id).await;
+                } else {
+                    eprintln!("Invalid JSON value from {client_id:?}");
                 }
             }
 
+            // keep leftovers for next read
             leftover = slice.to_vec();
         }
     }
 
+    /// Attempts to parse the next JSON frame from the slice.
+    /// Returns the parsed value and the number of bytes consumed.
+    fn parse_json_frame(slice: &[u8], client_id: &ClientId) -> Option<(serde_json::Value, usize)> {
+        let mut de = Deserializer::from_slice(slice).into_iter::<serde_json::Value>();
+        match de.next()? {
+            Ok(val) => Some((val, de.byte_offset())),
+            Err(_) => {
+                eprintln!("Incomplete JSON from {client_id:?}, waiting for more data");
+                None
+            }
+        }
+    }
     /// Writer loop for sending outbound messages to the client.
     ///
     /// Waits for:
