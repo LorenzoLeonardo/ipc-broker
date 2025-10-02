@@ -17,7 +17,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use serde_json::Deserializer;
+use async_trait::async_trait;
+use serde_json::{Deserializer, Value};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 #[cfg(unix)]
@@ -30,6 +31,7 @@ use uuid::Uuid;
 // RPC protocol types
 use crate::rpc::{BUF_SIZE, TCP_ADDR};
 use crate::rpc::{CallId, ClientId, RpcRequest, RpcResponse};
+use crate::worker::{SharedObject, WorkerBuilder};
 
 /// Type alias for the message channel used by each client actor.
 type ClientSender = mpsc::UnboundedSender<ClientMsg>;
@@ -613,6 +615,25 @@ fn spawn_client<S>(
     tokio::spawn(actor.run());
 }
 
+struct ListObjects {
+    objects: SharedObjects,
+}
+
+#[async_trait]
+impl SharedObject for ListObjects {
+    async fn call(&self, method: &str, _args: &Value) -> Value {
+        match method {
+            "listObjects" => {
+                let objs = self.objects.lock().await;
+                let entries: Vec<String> = objs.keys().cloned().collect();
+
+                serde_json::to_value(entries).unwrap_or(Value::Null)
+            }
+            _ => Value::Null,
+        }
+    }
+}
+
 /// Entry point for running the broker.
 ///
 /// This function:
@@ -651,6 +672,16 @@ pub async fn run_broker() -> std::io::Result<()> {
         calls.clone(),
     );
 
+    tokio::spawn(
+        WorkerBuilder::new()
+            .add(
+                "rob",
+                ListObjects {
+                    objects: objects.clone(),
+                },
+            )
+            .spawn(),
+    );
     // Wait for shutdown
     tokio::signal::ctrl_c().await?;
     println!("Broker shutting down...");
