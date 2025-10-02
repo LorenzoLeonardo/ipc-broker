@@ -30,7 +30,10 @@ fn format_value(value: &Value, indent: usize) -> String {
         Value::Object(obj) => {
             let mut out = format!("{padding}Map:\n");
             for (k, v) in obj {
-                out.push_str(&format!("{padding}  \"{k}\":{}\n", format_value(v, indent)));
+                out.push_str(&format!(
+                    "{padding}  {k} : :{}\n",
+                    format_value(v, indent + 1)
+                ));
             }
             out
         }
@@ -39,7 +42,6 @@ fn format_value(value: &Value, indent: usize) -> String {
 
 fn parse_signature(sig: &str, args: &mut std::slice::Iter<String>) -> Result<Value, String> {
     let mut chars = sig.chars().peekable();
-    println!("Parsing signature: {sig}");
 
     fn parse(
         chars: &mut std::iter::Peekable<std::str::Chars>,
@@ -123,12 +125,10 @@ async fn main() -> std::io::Result<()> {
     let parsed_args = if signature.is_empty() {
         serde_json::Value::Null
     } else {
-        parse_signature(&signature, &mut iter).map_err(|e| {
-            println!("Error parsing signature: {e}");
-            std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
-        })?
+        parse_signature(&signature, &mut iter)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?
     };
-    println!("Parsed args: {parsed_args}");
+
     // --- pick transport ---
     if command == "call" {
         let proxy = ClientHandle::connect().await?;
@@ -137,7 +137,7 @@ async fn main() -> std::io::Result<()> {
             .remote_call::<Value, Value>(object, method, parsed_args)
             .await?;
 
-        println!("Result:\n  {}", format_value(&response, 0));
+        println!("Result:\n{}", format_value(&response, 0));
     } else {
         println!("Unknown command: {command}");
     }
