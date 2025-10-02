@@ -243,7 +243,7 @@ impl ClientHandle {
         method: &str,
         args: &serde_json::Value,
     ) -> std::io::Result<RpcResponse> {
-        let call_id = CallId(Uuid::new_v4().to_string());
+        let call_id = CallId::from(Uuid::new_v4());
 
         let req = RpcRequest::Call {
             call_id,
