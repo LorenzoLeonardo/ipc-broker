@@ -462,21 +462,21 @@ async fn client_worker() {
         .expect("wait_for_object failed");
 
     let response = proxy
-        .remote_call::<i32>("Calculator", "add", &json!([5, 7]))
+        .remote_call::<Value, i32>("Calculator", "add", json!([5, 7]))
         .await
         .unwrap();
     println!("Client got response: {response}");
     assert_eq!(response, 12);
 
     let response = proxy
-        .remote_call::<i32>("Calculator", "mul", &json!([5, 7]))
+        .remote_call::<Value, i32>("Calculator", "mul", json!([5, 7]))
         .await
         .unwrap();
     println!("Client got response: {response}");
     assert_eq!(response, 35);
 
     let response = proxy
-        .remote_call::<Value>("Logger", "method", &Value::Null)
+        .remote_call::<Value, Value>("Logger", "method", Value::Null)
         .await
         .unwrap();
     println!("Client got response: {response}");

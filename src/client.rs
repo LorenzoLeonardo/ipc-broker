@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -238,22 +238,23 @@ impl ClientHandle {
     ///
     /// Returns the deserialized [`RpcResponse`] or an error if
     /// the call failed or connection was lost.
-    pub async fn remote_call<T>(
-        &self,
-        object: &str,
-        method: &str,
-        args: &Value,
-    ) -> std::io::Result<T>
+    pub async fn remote_call<U, T>(&self, object: &str, method: &str, args: U) -> std::io::Result<T>
     where
         T: DeserializeOwned,
+        U: Serialize + std::any::Any + 'static,
     {
+        let args = if let Some(val) = (&args as &dyn std::any::Any).downcast_ref::<Value>() {
+            val.clone()
+        } else {
+            serde_json::to_value(args)?
+        };
         let call_id = CallId::from(Uuid::new_v4());
 
         let req = RpcRequest::Call {
             call_id,
             object_name: object.into(),
             method: method.into(),
-            args: args.clone(),
+            args,
         };
 
         let (resp_tx, resp_rx) = oneshot::channel();
