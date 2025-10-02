@@ -1,16 +1,19 @@
 use async_trait::async_trait;
-use serde_json::{Deserializer, Value};
+use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 #[cfg(windows)]
 use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
 };
 
-use crate::rpc::{BUF_SIZE, RpcRequest, RpcResponse};
+use crate::{
+    broker::{read_packet, write_packet},
+    rpc::{RpcRequest, RpcResponse},
+};
 
 /// Abstraction for any asynchronous stream that can both read and write.
 ///
@@ -183,68 +186,51 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
         let reg = RpcRequest::RegisterObject {
             object_name: name.clone(),
         };
-        stream.write_all(&serde_json::to_vec(&reg).unwrap()).await?;
+        let data = serde_json::to_vec(&reg).unwrap();
+        write_packet(&mut stream, &data).await?;
     }
 
-    let mut buf = Vec::new();
-    let mut tmp = vec![0u8; BUF_SIZE];
-
     loop {
-        let n = stream.read(&mut tmp).await?;
-        if n == 0 {
-            break;
-        }
-        buf.extend_from_slice(&tmp[..n]);
-
-        loop {
-            let mut de = Deserializer::from_slice(&buf).into_iter::<serde_json::Value>();
-
-            match de.next() {
-                Some(Ok(val)) => {
-                    let consumed = de.byte_offset();
-
-                    if let Ok(req) = serde_json::from_value::<RpcRequest>(val.clone()) {
-                        match req {
-                            RpcRequest::Call {
-                                call_id,
-                                object_name,
-                                method,
-                                args,
-                            } => {
-                                if let Some(obj) = objects.get(&object_name) {
-                                    println!("Worker handling {object_name}.{method}({args})");
-                                    let result = obj.call(&method, &args).await;
-
-                                    let resp = RpcResponse::Result {
-                                        call_id,
-                                        object_name,
-                                        value: result,
-                                    };
-
-                                    let resp_bytes = serde_json::to_vec(&resp).unwrap();
-                                    stream.write_all(&resp_bytes).await?;
-                                } else {
-                                    eprintln!("Unknown object: {object_name}");
-                                }
-                            }
-                            _ => {
-                                println!("Worker got unsupported request: {req:?}");
-                            }
-                        }
-                    } else if let Ok(resp) = serde_json::from_value::<RpcResponse>(val) {
-                        println!("Worker got response: {resp:?}");
-                    }
-
-                    buf.drain(..consumed);
-                }
-                Some(Err(e)) if e.is_eof() => break,
-                Some(Err(e)) => {
-                    eprintln!("JSON parse error: {e:?}");
-                    buf.clear();
-                    break;
-                }
-                None => break,
+        let buf = match read_packet(&mut stream).await {
+            Ok(data) => data,
+            Err(err) => {
+                eprintln!("Read error : {err}");
+                break;
             }
+        };
+
+        if let Ok(req) = serde_json::from_slice::<RpcRequest>(&buf) {
+            match req {
+                RpcRequest::Call {
+                    call_id,
+                    object_name,
+                    method,
+                    args,
+                } => {
+                    if let Some(obj) = objects.get(&object_name) {
+                        println!("Worker handling {object_name}.{method}({args})");
+                        let result = obj.call(&method, &args).await;
+
+                        let resp = RpcResponse::Result {
+                            call_id,
+                            object_name,
+                            value: result,
+                        };
+
+                        let resp_bytes = serde_json::to_vec(&resp).unwrap();
+                        write_packet(&mut stream, &resp_bytes).await?;
+                    } else {
+                        eprintln!("Unknown object: {object_name}");
+                    }
+                }
+                _ => {
+                    println!("Worker got unsupported request: {req:?}");
+                }
+            }
+        } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf) {
+            println!("Worker got response: {resp:?}");
+        } else {
+            eprintln!("Invalid JSON value from broker");
         }
     }
     Ok(())
