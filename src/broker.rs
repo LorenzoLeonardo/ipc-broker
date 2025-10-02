@@ -588,7 +588,7 @@ fn spawn_client<S>(
 ) where
     S: Stream + 'static,
 {
-    let client_id = ClientId(Uuid::new_v4().to_string());
+    let client_id = ClientId::from(Uuid::new_v4());
     println!("New connection: {client_id:?}");
 
     let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();

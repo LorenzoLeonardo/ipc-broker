@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 pub const BUF_SIZE: usize = (u16::MAX as usize) + 1;
 pub const TCP_ADDR: &str = "0.0.0.0:5000";
@@ -8,10 +9,22 @@ pub const UNIX_PATH: &str = "/tmp/ipc_broker.sock";
 pub const PIPE_PATH: &str = r"\\.\pipe\ipc_broker";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ClientId(pub String);
+pub struct ClientId(String);
+
+impl From<Uuid> for ClientId {
+    fn from(uuid: Uuid) -> Self {
+        ClientId(uuid.to_string())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CallId(pub String);
+pub struct CallId(String);
+
+impl From<Uuid> for CallId {
+    fn from(uuid: Uuid) -> Self {
+        CallId(uuid.to_string())
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum RpcRequest {

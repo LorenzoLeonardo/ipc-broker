@@ -176,7 +176,7 @@ async fn tcp_stress_broker() {
                 match op_type {
                     "call" => {
                         let req = RpcRequest::Call {
-                            call_id: CallId(Uuid::new_v4().to_string()),
+                            call_id: CallId::from(Uuid::new_v4()),
                             object_name: my_object.clone(),
                             method: "echo".into(),
                             args: json!({"msg": format!("hello from client {i}")}),
@@ -262,7 +262,7 @@ async fn unix_stress_broker() {
                 match op_type {
                     "call" => {
                         let req = RpcRequest::Call {
-                            call_id: CallId(Uuid::new_v4().to_string()),
+                            call_id: CallId::from(Uuid::new_v4()),
                             object_name: my_object.clone(),
                             method: "echo".into(),
                             args: json!({"msg": format!("hello from client {i}")}),

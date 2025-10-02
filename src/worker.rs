@@ -214,10 +214,7 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                                 args,
                             } => {
                                 if let Some(obj) = objects.get(&object_name) {
-                                    println!(
-                                        "Worker handling {}.{}({})",
-                                        object_name, method, args
-                                    );
+                                    println!("Worker handling {object_name}.{method}({args})");
                                     let result = obj.call(&method, &args).await;
 
                                     let resp = RpcResponse::Result {
@@ -229,7 +226,7 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                                     let resp_bytes = serde_json::to_vec(&resp).unwrap();
                                     stream.write_all(&resp_bytes).await?;
                                 } else {
-                                    eprintln!("Unknown object: {}", object_name);
+                                    eprintln!("Unknown object: {object_name}");
                                 }
                             }
                             _ => {
