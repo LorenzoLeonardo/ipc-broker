@@ -1,4 +1,4 @@
-use ipc_broker::client::ClientHandle;
+use ipc_broker::{client::ClientHandle, logger};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -11,6 +11,8 @@ struct Param {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    logger::setup_logger();
+
     // --- pick transport ---
     let proxy = ClientHandle::connect().await?;
 
@@ -20,19 +22,19 @@ async fn main() -> std::io::Result<()> {
         .remote_call::<Value, i32>("Calculator", "add", json!([5, 7]))
         .await?;
 
-    println!("Client got response: {response:?}");
+    log::info!("Client got response: {response:?}");
 
     let response = proxy
         .remote_call::<Value, i32>("Calculator", "mul", json!([5, 7]))
         .await?;
 
-    println!("Client got response: {response:?}");
+    log::info!("Client got response: {response:?}");
 
     let response = proxy
         .remote_call::<Value, Value>("Logger", "log", Value::Null)
         .await?;
 
-    println!("Client got response: {response:?}");
+    log::info!("Client got response: {response:?}");
 
     let response = proxy
         .remote_call::<Param, Param>(
@@ -46,7 +48,7 @@ async fn main() -> std::io::Result<()> {
         )
         .await?;
 
-    println!("Client got response: {response:?}");
+    log::info!("Client got response: {response:?}");
 
     Ok(())
 }

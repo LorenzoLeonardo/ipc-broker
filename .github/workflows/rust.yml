@@ -10,6 +10,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  BROKER_DEBUG: trace
 
 jobs:
 

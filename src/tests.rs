@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::{
     broker::{read_packet, run_broker, write_packet},
     client::ClientHandle,
+    logger,
     rpc::{CallId, RpcRequest, RpcResponse},
     worker::{SharedObject, WorkerBuilder},
 };
@@ -55,6 +56,7 @@ impl SimpleRng {
 // Start broker once using std::sync::Once
 static START: std::sync::Once = std::sync::Once::new();
 fn ensure_broker_running() {
+    logger::setup_logger();
     START.call_once(|| {
         std::thread::spawn(|| {
             let rt = Runtime::new().unwrap();
@@ -115,7 +117,7 @@ impl Conn {
                 Ok(pipe) => return Conn::Pipe(pipe),
                 Err(e) if e.raw_os_error() == Some(231) => {
                     // All pipe instances are busy, wait and retry
-                    eprintln!("Pipe busy, retrying...");
+                    log::error!("Pipe busy, retrying...");
                     sleep(Duration::from_millis(100)).await;
                 }
                 Err(e) => {
@@ -239,7 +241,7 @@ async fn tcp_stress_broker() {
                     && n > 0
                     && let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n])
                 {
-                    println!("Client {i} got response: {val:?}");
+                    log::debug!("Client {i} got response: {val:?}");
                 }
 
                 ops_done += 1;
@@ -325,7 +327,7 @@ async fn unix_stress_broker() {
                 {
                     if n > 0 {
                         if let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n]) {
-                            println!("Client {i} got response: {val:?}");
+                            log::debug!("Client {i} got response: {val:?}");
                         }
                     }
                 }
@@ -413,7 +415,7 @@ async fn pipe_stress_broker() {
                     && n > 0
                     && let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n])
                 {
-                    println!("Client {i} got response: {val:?}");
+                    log::debug!("Client {i} got response: {val:?}");
                 }
 
                 ops_done += 1;
@@ -455,7 +457,7 @@ async fn client_worker() {
     #[async_trait]
     impl SharedObject for Logger {
         async fn call(&self, method: &str, args: &Value) -> Value {
-            println!("LOG: {method} -> {args}");
+            log::debug!("LOG: {method} -> {args}");
             Value::Null
         }
     }
@@ -470,7 +472,7 @@ async fn client_worker() {
             .spawn()
             .await
         {
-            eprintln!("worker exited early: {e:?}");
+            log::error!("worker exited early: {e:?}");
         }
     });
 
@@ -485,21 +487,21 @@ async fn client_worker() {
         .remote_call::<Value, i32>("Calculator", "add", json!([5, 7]))
         .await
         .unwrap();
-    println!("Client got response: {response}");
+    log::debug!("Client got response: {response}");
     assert_eq!(response, 12);
 
     let response = proxy
         .remote_call::<Value, i32>("Calculator", "mul", json!([5, 7]))
         .await
         .unwrap();
-    println!("Client got response: {response}");
+    log::debug!("Client got response: {response}");
     assert_eq!(response, 35);
 
     let response = proxy
         .remote_call::<Value, Value>("Logger", "method", Value::Null)
         .await
         .unwrap();
-    println!("Client got response: {response}");
+    log::debug!("Client got response: {response}");
     assert_eq!(response, Value::Null);
 }
 
@@ -565,7 +567,7 @@ async fn publish_subscribe() {
         .await
         .unwrap();
 
-    println!("[Publisher] done broadcasting");
+    log::debug!("[Publisher] done broadcasting");
 
     // Wait a bit for callbacks to fire (bounded)
     async fn wait_for_update(val: Arc<Mutex<Option<Value>>>) -> Value {

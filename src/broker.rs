@@ -72,7 +72,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
 pub async fn read_packet<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
     let len = reader.read_u32().await?;
-    println!("Reading packet of length: {len}");
+    log::debug!("Reading packet of length: {len}");
     let mut buf = vec![0u8; len as usize];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
@@ -85,7 +85,7 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(
     let len = data.len() as u32;
     // write length prefix first
     writer.write_u32(len).await?;
-    println!("Writing packet of length: {len}");
+    log::debug!("Writing packet of length: {len}");
     // then write actual data
     writer.write_all(data).await?;
     // optionally flush to ensure it's sent immediately
@@ -156,7 +156,7 @@ where
         // ✅ Cleanup here
         Self::cleanup_client(&client_id, &clients, &objects, &subscriptions, &calls).await;
 
-        println!("Actor ended for {client_id:?}");
+        log::debug!("Actor ended for {client_id:?}");
     }
 
     /// Cleans up broker state when a client disconnects:
@@ -171,7 +171,7 @@ where
         subscriptions: &SharedSubscriptions,
         calls: &SharedCalls,
     ) {
-        println!("Cleaning up client {client_id:?}");
+        log::debug!("Cleaning up client {client_id:?}");
 
         // Remove from clients map
         clients.lock().await.remove(client_id);
@@ -216,7 +216,7 @@ where
             let buf = match read_packet(&mut reader).await {
                 Ok(data) => data,
                 Err(err) => {
-                    eprintln!("Read error {client_id}: {err}");
+                    log::error!("Read error {client_id}: {err}");
                     break;
                 }
             };
@@ -225,7 +225,7 @@ where
             } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf) {
                 server_state.handle_response(resp, &client_id).await;
             } else {
-                eprintln!("Invalid JSON value from {client_id:?}");
+                log::error!("Invalid JSON value from {client_id:?}");
             }
         }
     }
@@ -245,19 +245,19 @@ where
     {
         tokio::select! {
             _ = &mut shutdown_rx => {
-                println!("Shutdown signal received by writer for {client_id:?}");
+                log::debug!("Shutdown signal received by writer for {client_id:?}");
             }
             _ = async {
                 while let Some(msg) = rx.recv().await {
                     match msg {
                         ClientMsg::Outgoing(bytes) => {
                             if let Err(e) =  write_packet(writer, &bytes).await {
-                                eprintln!("Write error {client_id}: {e}");
+                                log::error!("Write error {client_id}: {e}");
                                 break;
                             }
                         }
                         ClientMsg::_Shutdown => {
-                            println!("Writer got shutdown for {client_id:?}");
+                            log::debug!("Writer got shutdown for {client_id:?}");
                             break;
                         }
                     }
@@ -335,15 +335,15 @@ impl ServerState {
             } => {
                 // Look up original caller
                 if let Some(caller) = self.calls.lock().await.remove(call_id) {
-                    println!("Forwarding response for call_id {call_id:?} to caller {caller:?}");
+                    log::debug!("Forwarding response for call_id {call_id:?} to caller {caller:?}");
                     Self::send_to_client(&self.clients, &caller, &resp).await;
                 } else {
-                    eprintln!("No caller found for call_id {call_id:?}");
+                    log::error!("No caller found for call_id {call_id:?}");
                 }
             }
             _ => {
                 // Other response types (Subscribed, Event, etc.) are terminal, not forwarded
-                eprintln!("Unhandled response type: {resp:?}");
+                log::error!("Unhandled response type: {resp:?}");
             }
         }
     }
@@ -379,7 +379,7 @@ impl ServerState {
         let worker_opt = { self.objects.lock().await.get(&object_name).cloned() };
 
         if let Some(worker_id) = worker_opt {
-            println!("Forwarding call {call_id:?} to worker {worker_id:?}");
+            log::debug!("Forwarding call {call_id:?} to worker {worker_id:?}");
             let forwarded = RpcRequest::Call {
                 call_id,
                 object_name,
@@ -399,7 +399,7 @@ impl ServerState {
 
     /// Subscribes a client to a topic under a given object.
     async fn handle_subscribe(&self, object_name: String, topic: String, client_id: &ClientId) {
-        println!("Client {client_id:?} subscribing to {object_name}/{topic}");
+        log::debug!("Client {client_id:?} subscribing to {object_name}/{topic}");
         self.subscriptions
             .lock()
             .await
@@ -433,7 +433,7 @@ impl ServerState {
             let bytes = match serde_json::to_vec(&event) {
                 Ok(b) => b,
                 Err(e) => {
-                    eprintln!("[Broker] Failed to serialize event for topic {topic}: {e}");
+                    log::error!("[Broker] Failed to serialize event for topic {topic}: {e}");
                     return;
                 }
             };
@@ -456,7 +456,7 @@ impl ServerState {
         let bytes = match serde_json::to_vec(msg) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("[Broker] Failed to serialize message for {client_id:?}: {e}");
+                log::error!("[Broker] Failed to serialize message for {client_id:?}: {e}");
                 return; // skip this send but keep the broker running
             }
         };
@@ -475,7 +475,7 @@ async fn start_tcp_listener(
     calls: SharedCalls,
 ) -> std::io::Result<()> {
     let tcp_listener = TcpListener::bind(TCP_ADDR).await?;
-    println!("Broker listening on TCP {TCP_ADDR}");
+    log::info!("Broker listening on TCP {TCP_ADDR}");
 
     tokio::spawn(async move {
         loop {
@@ -489,7 +489,7 @@ async fn start_tcp_listener(
                         calls.clone(),
                     );
                 }
-                Err(e) => eprintln!("TCP accept error: {e:?}"),
+                Err(e) => log::error!("TCP accept error: {e:?}"),
             }
         }
     });
@@ -511,7 +511,7 @@ async fn start_unix_listener(
 
     let _ = std::fs::remove_file(UNIX_PATH); // cleanup old
     let unix_listener = UnixListener::bind(UNIX_PATH)?;
-    println!("Broker also listening on {UNIX_PATH}");
+    log::info!("Broker listening on Unix {UNIX_PATH}");
 
     tokio::spawn(async move {
         loop {
@@ -525,7 +525,7 @@ async fn start_unix_listener(
                         calls.clone(),
                     );
                 }
-                Err(e) => eprintln!("Unix accept error: {e:?}"),
+                Err(e) => log::error!("Unix accept error: {e:?}"),
             }
         }
     });
@@ -544,7 +544,7 @@ fn start_named_pipe_listener(
     calls: SharedCalls,
 ) {
     use crate::rpc::PIPE_PATH;
-    println!("Broker also listening on named pipe {PIPE_PATH}");
+    log::info!("Broker listening on NamedPipe {PIPE_PATH}");
 
     tokio::spawn(async move {
         loop {
@@ -554,7 +554,7 @@ fn start_named_pipe_listener(
             {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("Pipe creation failed: {e:?}");
+                    log::error!("Pipe creation failed: {e:?}");
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     continue;
                 }
@@ -568,7 +568,7 @@ fn start_named_pipe_listener(
             tokio::spawn(async move {
                 match server.connect().await {
                     Ok(()) => spawn_client(server, objects, clients, subs, calls),
-                    Err(e) => eprintln!("NamedPipe connection failed: {e:?}"),
+                    Err(e) => log::error!("NamedPipe connection failed: {e:?}"),
                 }
             });
         }
@@ -588,7 +588,7 @@ fn spawn_client<S>(
     S: Stream + 'static,
 {
     let client_id = ClientId::from(Uuid::new_v4());
-    println!("New connection: {client_id:?}");
+    log::debug!("New connection: {client_id:?}");
 
     let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
     let inner_client_id = client_id.clone();
@@ -680,6 +680,6 @@ pub async fn run_broker() -> std::io::Result<()> {
     );
     // Wait for shutdown
     tokio::signal::ctrl_c().await?;
-    println!("Broker shutting down...");
+    log::debug!("Broker shutting down...");
     Ok(())
 }

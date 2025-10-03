@@ -1,18 +1,20 @@
-use ipc_broker::client::ClientHandle;
+use ipc_broker::{client::ClientHandle, logger};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    logger::setup_logger();
+
     let client = ClientHandle::connect().await?;
 
     client
         .subscribe_async("object_name", "news", |value| {
-            println!("[News] Received: {value:?}");
+            log::info!("[News] Received: {value:?}");
         })
         .await;
 
     client
         .subscribe_async("object_name", "news1", |value| {
-            println!("[News1] Received: {value:?}");
+            log::info!("[News1] Received: {value:?}");
         })
         .await;
 

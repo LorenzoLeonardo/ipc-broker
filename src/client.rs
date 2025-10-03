@@ -88,13 +88,13 @@ impl ClientHandle {
 
                                 use std::time::Duration;
 
-                                eprintln!("All pipe instances busy, retrying...");
+                                log::error!("All pipe instances busy, retrying...");
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 continue;
                             }
                             Err(e) => {
                                 use std::time::Duration;
-                                eprintln!("Failed to connect to pipe: {}", e);
+                                log::error!("Failed to connect to pipe: {}", e);
                                 tokio::time::sleep(Duration::from_millis(100)).await;
                                 continue;
                             }
@@ -157,7 +157,7 @@ impl ClientHandle {
                                          }
                                     }
                                     RpcRequest::Publish { .. } | RpcRequest::Subscribe { .. } => {
-                                        // Fire-and-forget: do not await a response
+                                        log::trace!("Fire-and-forget: do not await a response");
                                         let _ = resp_tx.send(Ok(RpcResponse::Event {
                                             object_name: "".into(),
                                             topic: "".into(),
@@ -167,7 +167,7 @@ impl ClientHandle {
                                 }
                             }
                             ClientMsg::Subscribe { object_name, topic, updates } => {
-                                println!("Client subscribing to {object_name}/{topic}");
+                                log::debug!("Client subscribing to {object_name}/{topic}");
                                 subs.entry((object_name.clone(), topic.clone()))
                                     .or_default()
                                     .push(updates);
@@ -182,7 +182,7 @@ impl ClientHandle {
                         if data.is_empty() {
                             break;
                         }
-                        println!("Data {}", String::from_utf8_lossy(&data));
+                        log::debug!("Data {}", String::from_utf8_lossy(&data));
                         match serde_json::from_slice::<RpcResponse>(&data) {
                             Ok(resp) => {
                                 // Handle Publish notifications
@@ -193,12 +193,12 @@ impl ClientHandle {
                                         }
                                     }
                                 } else{
-                                    // Other responses are ignored here; handled elsewhere
+                                    log::trace!("Other responses are ignored here; handled elsewhere");
                                 }
                                 continue;
                             }
                             Err(_) => {
-                                panic!("Partial JSON, fallthrough to buffer handling");
+                                log::trace!("Partial JSON, fallthrough to buffer handling");
                             }
                         }
                     }

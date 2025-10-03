@@ -1,8 +1,10 @@
-use ipc_broker::client::ClientHandle;
+use ipc_broker::{client::ClientHandle, logger};
 use serde_json::json;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    logger::setup_logger();
+
     let proxy = ClientHandle::connect().await?;
 
     proxy
@@ -21,6 +23,6 @@ async fn main() -> std::io::Result<()> {
         )
         .await?;
 
-    println!("[Publisher] done broadcasting");
+    log::info!("[Publisher] done broadcasting");
     Ok(())
 }
