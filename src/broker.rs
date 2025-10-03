@@ -72,7 +72,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 
 pub async fn read_packet<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
     let len = reader.read_u32().await?;
-    log::debug!("Reading packet of length: {len}");
+    log::trace!("Reading packet of length: {len}");
     let mut buf = vec![0u8; len as usize];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
@@ -85,7 +85,7 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(
     let len = data.len() as u32;
     // write length prefix first
     writer.write_u32(len).await?;
-    log::debug!("Writing packet of length: {len}");
+    log::trace!("Writing packet of length: {len}");
     // then write actual data
     writer.write_all(data).await?;
     // optionally flush to ensure it's sent immediately
@@ -156,7 +156,7 @@ where
         // ✅ Cleanup here
         Self::cleanup_client(&client_id, &clients, &objects, &subscriptions, &calls).await;
 
-        log::debug!("Actor ended for {client_id:?}");
+        log::info!("CONNECTION ENDED: {client_id:?}");
     }
 
     /// Cleans up broker state when a client disconnects:
@@ -216,7 +216,7 @@ where
             let buf = match read_packet(&mut reader).await {
                 Ok(data) => data,
                 Err(err) => {
-                    log::error!("Read error {client_id}: {err}");
+                    log::error!("READ ERROR: {client_id:?}, {err}");
                     break;
                 }
             };
@@ -603,7 +603,7 @@ fn spawn_client<S>(
     S: Stream + 'static,
 {
     let client_id = ClientId::from(Uuid::new_v4());
-    log::debug!("New connection: {client_id:?}");
+    log::info!("CONNECTION STARTED: {client_id:?}");
 
     let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
     let inner_client_id = client_id.clone();
