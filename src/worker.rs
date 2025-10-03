@@ -164,18 +164,17 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                         Ok(pipe) => Box::new(pipe),
                         Err(e) if e.raw_os_error() == Some(231) => {
                             use std::time::Duration;
-                            eprintln!("All pipe instances busy, retrying...");
+                            log::error!("All pipe instances busy, retrying...");
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             continue;
                         }
                         Err(e) => {
                             use std::time::Duration;
-                            eprintln!("Failed to connect to pipe: {}", e);
+                            log::error!("Failed to connect to pipe: {}", e);
                             tokio::time::sleep(Duration::from_millis(100)).await;
                             continue;
                         }
                     };
-                    println!("Client connected via Named Pipe: {PIPE_PATH}");
                     break res;
                 }
             }
@@ -194,7 +193,7 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
         let buf = match read_packet(&mut stream).await {
             Ok(data) => data,
             Err(err) => {
-                eprintln!("Read error : {err}");
+                log::error!("Read error : {err}");
                 break;
             }
         };
@@ -208,7 +207,7 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                     args,
                 } => {
                     if let Some(obj) = objects.get(&object_name) {
-                        println!("Worker handling {object_name}.{method}({args})");
+                        log::debug!("Worker handling {object_name}.{method}({args})");
                         let result = obj.call(&method, &args).await;
 
                         let resp = RpcResponse::Result {
@@ -220,17 +219,17 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                         let resp_bytes = serde_json::to_vec(&resp).unwrap();
                         write_packet(&mut stream, &resp_bytes).await?;
                     } else {
-                        eprintln!("Unknown object: {object_name}");
+                        log::error!("Unknown object: {object_name}");
                     }
                 }
                 _ => {
-                    println!("Worker got unsupported request: {req:?}");
+                    log::debug!("Worker got unsupported request: {req:?}");
                 }
             }
         } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf) {
-            println!("Worker got response: {resp:?}");
+            log::debug!("Worker got response: {resp:?}");
         } else {
-            eprintln!("Invalid JSON value from broker");
+            log::error!("Invalid JSON value from broker");
         }
     }
     Ok(())

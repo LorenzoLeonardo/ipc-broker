@@ -92,7 +92,7 @@ async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     if args.len() < 3 {
-        eprintln!("Usage: rob call <object> <method> [signature] [args...]");
+        log::error!("Usage: rob call <object> <method> [signature] [args...]");
         return Ok(());
     }
 
@@ -130,7 +130,7 @@ async fn main() -> std::io::Result<()> {
 
         println!("Result:\n{}", format_value(&response, 0));
     } else {
-        println!("Unknown command: {command}");
+        eprintln!("Unknown command: {command}");
     }
     Ok(())
 }
