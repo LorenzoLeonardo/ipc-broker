@@ -66,7 +66,7 @@ impl ClientHandle {
         let stream: Box<dyn AsyncStream + Send + Unpin> =
             if let Ok(ip) = std::env::var("BROKER_ADDR") {
                 let tcp = TcpStream::connect(ip.as_str()).await?;
-                log::info!("Client connected via TCP: {ip}");
+                log::info!("Connected into TCP: {ip}");
                 Box::new(tcp)
             } else {
                 // Local IPC depending on OS
@@ -75,7 +75,7 @@ impl ClientHandle {
                     use crate::rpc::UNIX_PATH;
 
                     let unix = UnixStream::connect(UNIX_PATH).await?;
-                    log::info!("Client connected via Unix: {UNIX_PATH}");
+                    log::info!("Connected into Unix: {UNIX_PATH}");
                     Box::new(unix)
                 }
 
@@ -85,7 +85,7 @@ impl ClientHandle {
                     loop {
                         let res = match ClientOptions::new().open(PIPE_PATH) {
                             Ok(pipe) => {
-                                log::info!("Client connected via Windows NamedPipe: {PIPE_PATH}");
+                                log::info!("Connected into NamedPipe: {PIPE_PATH}");
                                 Box::new(pipe)
                             }
                             Err(e) if e.raw_os_error() == Some(231) => {

@@ -147,12 +147,14 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
     let mut stream: Box<dyn AsyncStream + Send + Unpin> =
         if let Ok(ip) = std::env::var("BROKER_ADDR") {
             let tcp = TcpStream::connect(ip.as_str()).await?;
+            log::info!("Connected into TCP: {ip}");
             Box::new(tcp)
         } else {
             #[cfg(unix)]
             {
                 use crate::rpc::UNIX_PATH;
                 let unix = UnixStream::connect(UNIX_PATH).await?;
+                log::info!("Connected into Unix: {UNIX_PATH}");
                 Box::new(unix)
             }
 
@@ -161,7 +163,10 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                 use crate::rpc::PIPE_PATH;
                 loop {
                     let res = match ClientOptions::new().open(PIPE_PATH) {
-                        Ok(pipe) => Box::new(pipe),
+                        Ok(pipe) => {
+                            log::info!("Connected into NamedPipe: {PIPE_PATH}");
+                            Box::new(pipe)
+                        }
                         Err(e) if e.raw_os_error() == Some(231) => {
                             use std::time::Duration;
                             log::error!("All pipe instances busy, retrying...");

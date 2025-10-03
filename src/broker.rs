@@ -480,16 +480,22 @@ async fn start_tcp_listener(
     tokio::spawn(async move {
         loop {
             match tcp_listener.accept().await {
-                Ok((stream, _)) => {
-                    spawn_client(
-                        stream,
-                        objects.clone(),
-                        clients.clone(),
-                        subscriptions.clone(),
-                        calls.clone(),
-                    );
-                }
-                Err(e) => log::error!("TCP accept error: {e:?}"),
+                Ok((stream, _)) => match stream.peer_addr() {
+                    Ok(peer) => {
+                        log::info!("A Client connected via TCP: {}:{}", peer.ip(), peer.port());
+                        spawn_client(
+                            stream,
+                            objects.clone(),
+                            clients.clone(),
+                            subscriptions.clone(),
+                            calls.clone(),
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("TCP peer error: {e}")
+                    }
+                },
+                Err(e) => log::error!("TCP accept error: {e}"),
             }
         }
     });
@@ -516,15 +522,21 @@ async fn start_unix_listener(
     tokio::spawn(async move {
         loop {
             match unix_listener.accept().await {
-                Ok((stream, _)) => {
-                    spawn_client(
-                        stream,
-                        objects.clone(),
-                        clients.clone(),
-                        subscriptions.clone(),
-                        calls.clone(),
-                    );
-                }
+                Ok((stream, _)) => match stream.peer_addr() {
+                    Ok(_) => {
+                        log::info!("A Client connected via Unix: {UNIX_PATH}");
+                        spawn_client(
+                            stream,
+                            objects.clone(),
+                            clients.clone(),
+                            subscriptions.clone(),
+                            calls.clone(),
+                        );
+                    }
+                    Err(e) => {
+                        log::error!("Unix peer error: {e}")
+                    }
+                },
                 Err(e) => log::error!("Unix accept error: {e:?}"),
             }
         }
@@ -567,7 +579,10 @@ fn start_named_pipe_listener(
 
             tokio::spawn(async move {
                 match server.connect().await {
-                    Ok(()) => spawn_client(server, objects, clients, subs, calls),
+                    Ok(()) => {
+                        log::info!("A Client connected via Window NamePipe: {PIPE_PATH}");
+                        spawn_client(server, objects, clients, subs, calls)
+                    }
                     Err(e) => log::error!("NamedPipe connection failed: {e:?}"),
                 }
             });
