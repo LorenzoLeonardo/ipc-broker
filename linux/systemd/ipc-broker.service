@@ -1,0 +1,14 @@
+[Unit]
+Description=IPC Broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=HOME=/home/lleonardo
+WorkingDirectory=/home/lleonardo/bin/ipc-broker
+ExecStart=/home/lleonardo/bin/ipc-broker/ipc-broker
+Restart=always
+User=lleonardo
+
+[Install]
+WantedBy=multi-user.target
