@@ -139,6 +139,10 @@ async fn main() -> std::io::Result<()> {
             })
             .await;
         tokio::signal::ctrl_c().await?;
+    } else if command == "send" {
+        let proxy = ClientHandle::connect().await?;
+        println!("Sending: {parsed_args}");
+        proxy.publish(object, method, &parsed_args).await?;
     } else {
         eprintln!("Unknown command: {command}");
     }
