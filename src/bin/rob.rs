@@ -129,6 +129,16 @@ async fn main() -> std::io::Result<()> {
             .await?;
 
         println!("Result:\n{}", format_value(&response, 0));
+    } else if command == "listen" {
+        println!("Listening for: object={object} method={method}. Press ctrl+c to exit.\n\n");
+        let proxy = ClientHandle::connect().await?;
+
+        proxy
+            .subscribe_async(object, method, |param| {
+                println!("Result:\n{}", format_value(&param, 0));
+            })
+            .await;
+        tokio::signal::ctrl_c().await?;
     } else {
         eprintln!("Unknown command: {command}");
     }
