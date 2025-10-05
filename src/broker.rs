@@ -474,7 +474,7 @@ fn get_local_ip_port() -> String {
                 .rsplit(':')
                 .next()
                 .and_then(|s| s.parse::<u16>().ok())
-                .unwrap_or(5000);
+                .unwrap_or(5123);
             format!("{result}:{port}")
         }
         Err(e) => {
