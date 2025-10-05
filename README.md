@@ -10,7 +10,7 @@ and both **TCP** and **Named Pipes** for Windows.
 
 * **Dual transport support**
 
-  * TCP (`127.0.0.1:5000`)
+  * TCP (`127.0.0.1:5123`)
   * Unix socket (`/tmp/ipc_broker.sock`)
   * Named Pipes (`\\.\pipe\ipc_broker`)
 * **RPC calls**
@@ -57,7 +57,7 @@ cargo run --bin ipc-broker
 
 The broker will listen on:
 
-* TCP: `127.0.0.1:5000`
+* TCP: `127.0.0.1:5123`
 * Unix socket: `/tmp/ipc_broker.sock` (on Linux/macOS)
 * Named pipe: `\\.\pipe\ipc_broker` (on Windows)
 
