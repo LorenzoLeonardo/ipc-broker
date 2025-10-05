@@ -658,39 +658,36 @@ pub async fn run_broker() -> std::io::Result<()> {
     let calls: SharedCalls = Arc::new(Mutex::new(HashMap::new()));
 
     // Spawn listeners
-    start_tcp_listener(
-        objects.clone(),
-        clients.clone(),
-        subscriptions.clone(),
-        calls.clone(),
-    )
-    .await?;
+    let mode = std::env::var("APP_MODE").unwrap_or_else(|_| "release".into());
+
+    match mode.as_str() {
+        "debug" => {
+            log::info!("Running in {mode} mode — TCP listener on IP/port {TCP_ADDR} is enabled.");
+            start_tcp_listener(
+                objects.clone(),
+                clients.clone(),
+                subscriptions.clone(),
+                calls.clone(),
+            )
+            .await?;
+        }
+        "release" => {
+            log::info!("Running in {mode} mode — TCP listener on IP/port {TCP_ADDR} is disabled.");
+        }
+        _ => {
+            log::error!("Unknown '{mode}' mode, defaulting to production behavior.");
+        }
+    }
 
     #[cfg(unix)]
-    start_unix_listener(
-        objects.clone(),
-        clients.clone(),
-        subscriptions.clone(),
-        calls.clone(),
-    )
-    .await?;
+    start_unix_listener(objects.clone(), clients, subscriptions, calls).await?;
 
     #[cfg(windows)]
-    start_named_pipe_listener(
-        objects.clone(),
-        clients.clone(),
-        subscriptions.clone(),
-        calls.clone(),
-    );
+    start_named_pipe_listener(objects.clone(), clients, subscriptions, calls);
 
     tokio::spawn(
         WorkerBuilder::new()
-            .add(
-                "rob",
-                ListObjects {
-                    objects: objects.clone(),
-                },
-            )
+            .add("rob", ListObjects { objects })
             .spawn(),
     );
     // Wait for shutdown
