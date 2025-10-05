@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Environment=HOME=/home/lleonardo
+Environment=APP_MODE=release
 WorkingDirectory=/home/lleonardo/bin/ipc-broker
 ExecStart=/home/lleonardo/bin/ipc-broker/ipc-broker
 Restart=always
