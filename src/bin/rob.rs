@@ -1,3 +1,135 @@
+//! # IPC Broker Client Tool
+//!
+//! This tool provides a command-line interface for interacting with an IPC-based broker
+//! using the [`ipc_broker::client::ClientHandle`] API.
+//!
+//! It supports three primary operations:
+//! - **Remote call** — invoke a method on a remote object and wait for a response.
+//! - **Publish (send)** — send an event/notification to a topic without expecting a reply.
+//! - **Subscribe (listen)** — listen for incoming published events from a topic.
+//!
+//! ## Command Syntax
+//! ```bash
+//! rob <command> <object> <method> [signature] [args...]
+//! ```
+//!
+//! ### Arguments
+//! | Name | Description |
+//! |------|--------------|
+//! | `<command>` | One of `call`, `send`, or `listen` |
+//! | `<object>`  | The remote object or topic name |
+//! | `<method>`  | The method or event name |
+//! | `[signature]` | Optional type signature for argument parsing |
+//! | `[args...]` | Optional arguments matching the signature |
+//!
+//! ### Supported Commands
+//!
+//! #### 1. `call` — Remote Procedure Call
+//! Performs a request-response style operation via `remote_call()`.
+//!
+//! ```bash
+//! rob call <object> <method> [signature] [args...]
+//! ```
+//!
+//! - Sends a structured request to the broker.
+//! - Waits for and prints the JSON response.
+//!
+//! Example:
+//! ```bash
+//! rob call device_manager get_status
+//! ```
+//!
+//! With arguments and signature:
+//! ```bash
+//! # Call a method expecting (string, integer)
+//! rob call math add "(si)" hello 42
+//! ```
+//!
+//! #### 2. `send` — Publish an Event
+//! Sends a message to subscribers without expecting a reply via `publish()`.
+//!
+//! ```bash
+//! rob send <object> <method> [signature] [args...]
+//! ```
+//!
+//! Example:
+//! ```bash
+//! # Send a string payload
+//! rob send system notify "s" "Rebooting in 5 minutes"
+//! ```
+//!
+//! #### 3. `listen` — Subscribe to Events
+//! Subscribes to a topic using `subscribe_async()` and prints every message received.
+//!
+//! ```bash
+//! rob listen <object> <method>
+//! ```
+//!
+//! Example:
+//! ```bash
+//! rob listen system notify
+//! ```
+//!
+//! Output example:
+//! ```text
+//! Listening for: object=system method=notify. Press ctrl+c to exit.
+//
+//! Result:
+//! Map:
+//!   message : :"Rebooting in 5 minutes"
+//! ```
+//!
+//! ## Signature Format
+//!
+//! The `[signature]` argument describes how to parse `[args...]` into structured JSON.
+//! The parser supports nested objects and arrays using symbols similar to D-Bus or GLib GVariant syntax.
+//!
+//! | Symbol | Meaning | Example |
+//! |---------|----------|---------|
+//! | `s` | string | `"s"` `"hello"` → `"hello"` |
+//! | `i` | integer | `"i"` `42` → `42` |
+//! | `n` | null | `"n"` → `null` |
+//! | `{ ... }` | object (map) | `"{si}"` `"key1"` `"val1"` `"key2"` `42` |
+//! | `( ... )` | array (list) | `"(si)"` `"hello"` `42` |
+//!
+//! Example complex call:
+//! ```bash
+//! # Sends a nested object and array
+//! rob call data update "{s(i)}" "profile" "hello" 42
+//! ```
+//!
+//! Which produces this JSON:
+//! ```json
+//! {
+//!   "profile": ["hello", 42]
+//! }
+//! ```
+//!
+//! ## Implementation Notes
+//!
+//! - Uses [`serde_json::Value`] as the generic message container.
+//! - Connection is automatically created via [`ClientHandle::connect()`].
+//! - Message formatting is handled by [`format_value()`] for pretty printing nested values.
+//!
+//! ## Example Output
+//! ```text
+//! Result:
+//! Map:
+//!   status : :"ok"
+//!   uptime : :12345
+//! ```
+//!
+//! ## Error Handling
+//! - Invalid command, missing arguments, or malformed signatures are gracefully reported.
+//! - Signature and argument mismatches return `InvalidInput` errors.
+//!
+//! ## Example Usage Summary
+//! | Command | Example | Description |
+//! |----------|----------|-------------|
+//! | call | `rob call user_service get_info "(s)" "john"` | Query user info |
+//! | send | `rob send sensor update "(i)" 42` | Publish sensor value |
+//! | listen | `rob listen sensor update` | Subscribe to sensor updates |
+//!
 use ipc_broker::client::ClientHandle;
 use serde_json::Value;
 
