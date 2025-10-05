@@ -467,6 +467,23 @@ impl ServerState {
     }
 }
 
+fn get_local_ip_port() -> String {
+    match local_ip_address::local_ip() {
+        Ok(result) => {
+            let port = TCP_ADDR
+                .rsplit(':')
+                .next()
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(5000);
+            format!("{result}:{port}")
+        }
+        Err(e) => {
+            log::error!("get_local_ip_port: {e}, defaulting to {TCP_ADDR}");
+            TCP_ADDR.to_string()
+        }
+    }
+}
+
 /// Start a TCP listener for incoming broker connections.
 async fn start_tcp_listener(
     objects: SharedObjects,
@@ -474,8 +491,9 @@ async fn start_tcp_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) -> std::io::Result<()> {
-    let tcp_listener = TcpListener::bind(TCP_ADDR).await?;
-    log::info!("Broker listening on TCP {TCP_ADDR}");
+    let addr = get_local_ip_port();
+    let tcp_listener = TcpListener::bind(addr.as_str()).await?;
+    log::info!("Broker listening on TCP {addr}");
 
     tokio::spawn(async move {
         loop {
@@ -662,7 +680,7 @@ pub async fn run_broker() -> std::io::Result<()> {
 
     match mode.as_str() {
         "debug" => {
-            log::info!("Running in {mode} mode — TCP listener on IP/port {TCP_ADDR} is enabled.");
+            log::info!("Running in {mode} mode — TCP listener on IP/port is enabled.");
             start_tcp_listener(
                 objects.clone(),
                 clients.clone(),
@@ -672,7 +690,7 @@ pub async fn run_broker() -> std::io::Result<()> {
             .await?;
         }
         "release" => {
-            log::info!("Running in {mode} mode — TCP listener on IP/port {TCP_ADDR} is disabled.");
+            log::info!("Running in {mode} mode — TCP listener on IP/port is disabled.");
         }
         _ => {
             log::error!("Unknown '{mode}' mode, defaulting to production behavior.");
