@@ -42,8 +42,10 @@ cargo build --release || { echo "cargo build failed"; exit 1; }
 echo "Installing new packages..."
 sudo mkdir -p "$DEST_DIR"
 sudo cp "$PWD/target/release/$EXECUTABLE_NAME" "$DEST_DIR"
+sudo cp "$PWD/target/release/rob" "$DEST_DIR"
 sudo cp "$PWD/linux/systemd/$SERVICE_NAME" "/etc/systemd/system/$SERVICE_NAME"
 sudo chmod +x "$DEST_DIR/$EXECUTABLE_NAME"
+sudo chmod +x "$DEST_DIR/rob"
 
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE_NAME"

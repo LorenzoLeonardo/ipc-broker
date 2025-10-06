@@ -219,9 +219,23 @@ fn parse_signature(sig: &str, args: &mut std::slice::Iter<String>) -> Result<Val
     parse(&mut chars, args)
 }
 
+const APP_NAME: &str = "rob";
+const APP_VERSION: &str = env!("ROB_VERSION");
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+
+    // Handle global flags first
+    if args.iter().any(|a| a == "--version" || a == "-v") {
+        println!("{APP_NAME} version {APP_VERSION}");
+        return Ok(());
+    }
+
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("Usage: rob call <object> <method> [signature] [args...]");
+        return Ok(());
+    }
 
     if args.len() < 3 {
         log::error!("Usage: rob call <object> <method> [signature] [args...]");
