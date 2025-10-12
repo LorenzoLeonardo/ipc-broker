@@ -578,32 +578,31 @@ fn start_named_pipe_listener(
 
     tokio::spawn(async move {
         loop {
-            let server = match ServerOptions::new()
-                .first_pipe_instance(false) // multiple instances
-                .create(PIPE_PATH)
-            {
-                Ok(s) => s,
+            match ServerOptions::new().create(PIPE_PATH) {
+                Ok(server) => {
+                    let objects = objects.clone();
+                    let clients = clients.clone();
+                    let subs = subscriptions.clone();
+                    let calls = calls.clone();
+
+                    // Wait for client before creating another server
+                    match server.connect().await {
+                        Ok(()) => {
+                            log::info!("Client connected via NamedPipe: {PIPE_PATH}");
+                            spawn_client(server, objects, clients, subs, calls);
+                        }
+                        Err(e) => {
+                            log::error!("NamedPipe connection failed: {e:?}");
+                            // short delay to avoid tight loop on error
+                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                        }
+                    }
+                }
                 Err(e) => {
                     log::error!("Pipe creation failed: {e:?}");
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    continue;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                 }
-            };
-
-            let objects = objects.clone();
-            let clients = clients.clone();
-            let subs = subscriptions.clone();
-            let calls = calls.clone();
-
-            tokio::spawn(async move {
-                match server.connect().await {
-                    Ok(()) => {
-                        log::info!("A Client connected via Window NamePipe: {PIPE_PATH}");
-                        spawn_client(server, objects, clients, subs, calls)
-                    }
-                    Err(e) => log::error!("NamedPipe connection failed: {e:?}"),
-                }
-            });
+            }
         }
     });
 }
