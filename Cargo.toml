@@ -24,4 +24,4 @@ uuid = { version = "1.18", features = ["v4"] }
 
 [dev-dependencies]
 anyhow = "1.0"
-ctor = "0.5"
+ctor = "0.6"
