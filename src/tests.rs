@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::{
     broker::{read_packet, run_broker, write_packet},
-    client::ClientHandle,
+    client::IPCClient,
     logger,
     rpc::{CallId, RpcRequest, RpcResponse},
     worker::{SharedObject, WorkerBuilder},
@@ -475,7 +475,7 @@ async fn client_worker() {
         }
     });
 
-    let proxy = ClientHandle::connect().await.unwrap();
+    let proxy = IPCClient::connect().await.unwrap();
 
     proxy
         .wait_for_object("Calculator")
@@ -518,7 +518,7 @@ async fn publish_subscribe() {
     let notify = Arc::new(Notify::new());
     let notify_clone = notify.clone();
     tokio::spawn(async move {
-        let client = ClientHandle::connect().await.unwrap();
+        let client = IPCClient::connect().await.unwrap();
 
         let inner_news_val = Arc::clone(&news_val_for_task);
         client
@@ -551,7 +551,7 @@ async fn publish_subscribe() {
     timeout(Duration::from_secs(3), notify.notified())
         .await
         .expect("subscriber did not register in time");
-    let proxy = ClientHandle::connect().await.unwrap();
+    let proxy = IPCClient::connect().await.unwrap();
 
     proxy
         .publish(

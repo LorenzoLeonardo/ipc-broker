@@ -25,7 +25,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> AsyncStream for T {}
 
 /// Internal message sent to the client actor.
 ///
-/// This is used to decouple the `ClientHandle` (public API)
+/// This is used to decouple the `IPCClient` (public API)
 /// from the background task that drives I/O with the server.
 enum ClientMsg {
     /// Request a remote procedure call, expecting a response.
@@ -48,11 +48,11 @@ enum ClientMsg {
 /// Internally it communicates with a background task (the “client actor”)
 /// that manages the network connection.
 #[derive(Clone)]
-pub struct ClientHandle {
+pub struct IPCClient {
     tx: mpsc::UnboundedSender<ClientMsg>,
 }
 
-impl ClientHandle {
+impl IPCClient {
     /// Connect to the broker and spawn the client actor.
     ///
     /// - If `BROKER_ADDR` environment variable is set, it connects via TCP.
@@ -60,7 +60,7 @@ impl ClientHandle {
     ///   - On Unix: connects to a Unix socket at `rpc::UNIX_PATH`.
     ///   - On Windows: connects to a named pipe at `rpc::PIPE_PATH`.
     ///
-    /// Returns a [`ClientHandle`] that can be used to issue requests.
+    /// Returns a [`IPCClient`] that can be used to issue requests.
     pub async fn connect() -> std::io::Result<Self> {
         // Pick transport
         let stream: Box<dyn AsyncStream + Send + Unpin> =

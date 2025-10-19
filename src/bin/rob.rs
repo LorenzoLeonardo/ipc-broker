@@ -1,7 +1,7 @@
 //! # IPC Broker Client Tool
 //!
 //! This tool provides a command-line interface for interacting with an IPC-based broker
-//! using the [`ipc_broker::client::ClientHandle`] API.
+//! using the [`ipc_broker::client::IPCClient`] API.
 //!
 //! It supports three primary operations:
 //! - **Remote call** — invoke a method on a remote object and wait for a response.
@@ -108,7 +108,7 @@
 //! ## Implementation Notes
 //!
 //! - Uses [`serde_json::Value`] as the generic message container.
-//! - Connection is automatically created via [`ClientHandle::connect()`].
+//! - Connection is automatically created via [`IPCClient::connect()`].
 //! - Message formatting is handled by [`format_value()`] for pretty printing nested values.
 //!
 //! ## Example Output
@@ -130,7 +130,7 @@
 //! | send | `rob send sensor update "(i)" 42` | Publish sensor value |
 //! | listen | `rob listen sensor update` | Subscribe to sensor updates |
 //!
-use ipc_broker::client::ClientHandle;
+use ipc_broker::client::IPCClient;
 use serde_json::Value;
 
 fn format_value(value: &Value, indent: usize) -> String {
@@ -268,7 +268,7 @@ async fn main() -> std::io::Result<()> {
 
     // --- pick transport ---
     if command == "call" {
-        let proxy = ClientHandle::connect().await?;
+        let proxy = IPCClient::connect().await?;
 
         let response = proxy
             .remote_call::<Value, Value>(object, method, parsed_args)
@@ -277,7 +277,7 @@ async fn main() -> std::io::Result<()> {
         println!("Result:\n{}", format_value(&response, 0));
     } else if command == "listen" {
         println!("Listening for: object={object} method={method}. Press ctrl+c to exit.\n\n");
-        let proxy = ClientHandle::connect().await?;
+        let proxy = IPCClient::connect().await?;
 
         proxy
             .subscribe_async(object, method, |param| {
@@ -286,7 +286,7 @@ async fn main() -> std::io::Result<()> {
             .await;
         tokio::signal::ctrl_c().await?;
     } else if command == "send" {
-        let proxy = ClientHandle::connect().await?;
+        let proxy = IPCClient::connect().await?;
         println!("Sending: {parsed_args}");
         proxy.publish(object, method, &parsed_args).await?;
     } else {
