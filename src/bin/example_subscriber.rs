@@ -1,8 +1,8 @@
-use ipc_broker::client::ClientHandle;
+use ipc_broker::client::IPCClient;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let client = ClientHandle::connect().await?;
+    let client = IPCClient::connect().await?;
 
     client
         .subscribe_async("sensor", "temperature", |value| {
