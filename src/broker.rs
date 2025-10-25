@@ -23,8 +23,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 #[cfg(unix)]
 use tokio::net::UnixListener;
-#[cfg(windows)]
-use tokio::net::windows::named_pipe::ServerOptions;
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
@@ -573,38 +571,91 @@ fn start_named_pipe_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) {
+    use std::ffi::c_void;
+    use std::ptr::null_mut;
+    use tokio::net::windows::named_pipe::ServerOptions;
+    use windows::{
+        Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES},
+        core::BOOL,
+    };
+
     use crate::rpc::PIPE_PATH;
-    log::info!("Broker listening on NamedPipe {PIPE_PATH}");
 
-    tokio::spawn(async move {
-        loop {
-            match ServerOptions::new().create(PIPE_PATH) {
-                Ok(server) => {
-                    let objects = objects.clone();
-                    let clients = clients.clone();
-                    let subs = subscriptions.clone();
-                    let calls = calls.clone();
+    log::info!("Broker listening on NamedPipe {}", PIPE_PATH);
+    unsafe {
+        use windows::{
+            Win32::Security::Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            core::PCWSTR,
+        };
 
-                    // Wait for client before creating another server
-                    match server.connect().await {
-                        Ok(()) => {
-                            log::info!("Client connected via NamedPipe: {PIPE_PATH}");
-                            spawn_client(server, objects, clients, subs, calls);
-                        }
-                        Err(e) => {
-                            log::error!("NamedPipe connection failed: {e:?}");
-                            // short delay to avoid tight loop on error
-                            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let sddl = windows::core::w!("D:(A;;GA;;;WD)");
+        let mut p_sd: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR(null_mut());
+
+        let success = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR::from_raw(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut p_sd,
+            Some(null_mut()),
+        );
+
+        if success.is_err() {
+            let err = std::io::Error::last_os_error();
+            log::error!("Failed to create security descriptor: {}", err);
+            return;
+        }
+
+        //
+        // Build SECURITY_ATTRIBUTES pointing to that descriptor
+        //
+        let sa_box = Box::new(SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: p_sd.0 as *mut c_void,
+            bInheritHandle: BOOL(0),
+        });
+
+        // Leak it so pointer is valid for 'static lifetime
+        let sa_raw_ptr = Box::into_raw(sa_box) as *mut c_void;
+
+        struct SecurityAttributesHolder {
+            ptr: *mut c_void,
+        }
+        unsafe impl Send for SecurityAttributesHolder {}
+        unsafe impl Sync for SecurityAttributesHolder {}
+
+        let holder = Arc::new(SecurityAttributesHolder { ptr: sa_raw_ptr });
+        let holder_clone = holder.clone();
+        tokio::spawn(async move {
+            loop {
+                match ServerOptions::new()
+                    .create_with_security_attributes_raw(PIPE_PATH, holder_clone.ptr)
+                {
+                    Ok(server) => {
+                        let objects = objects.clone();
+                        let clients = clients.clone();
+                        let subs = subscriptions.clone();
+                        let calls = calls.clone();
+
+                        match server.connect().await {
+                            Ok(()) => {
+                                log::info!("Client connected via NamedPipe: {}", PIPE_PATH);
+                                spawn_client(server, objects, clients, subs, calls);
+                            }
+                            Err(e) => {
+                                log::error!("NamedPipe connection failed: {:?}", e);
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    log::error!("Pipe creation failed: {e:?}");
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    Err(e) => {
+                        log::error!("Pipe creation failed: {:?}", e);
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
                 }
             }
-        }
-    });
+        });
+    }
 }
 
 /// Spawns a new client actor from a given stream.
