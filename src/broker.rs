@@ -23,7 +23,6 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{Mutex, mpsc};
-#[cfg(unix)]
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
@@ -583,12 +582,12 @@ async fn start_unix_listener(
 /// Start a Windows named pipe listener for incoming broker connections.
 ///
 /// This is only available on Windows systems.
-fn start_named_pipe_listener(
+async fn start_named_pipe_listener(
     objects: SharedObjects,
     clients: SharedClients,
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
-) {
+) -> std::io::Result<JoinHandle<()>> {
     use std::{ffi::c_void, ptr::null_mut, time::Duration};
 
     use tokio::{net::windows::named_pipe::ServerOptions, signal};
@@ -606,7 +605,7 @@ fn start_named_pipe_listener(
     use crate::rpc::PIPE_PATH;
 
     log::info!("Broker listening on NamedPipe {}", PIPE_PATH);
-    unsafe {
+    let handle = unsafe {
         let sddl = windows::core::w!("D:(A;;GA;;;WD)");
         let mut p_sd: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR(null_mut());
 
@@ -619,7 +618,7 @@ fn start_named_pipe_listener(
 
         if let Err(e) = success {
             log::error!("Failed to create security descriptor: {e}");
-            return;
+            return Err(std::io::Error::other(e.to_string()));
         }
 
         let sa_box = Box::new(SECURITY_ATTRIBUTES {
@@ -693,8 +692,9 @@ fn start_named_pipe_listener(
                     } => {}
                 }
             }
-        });
-    }
+        })
+    };
+    Ok(handle)
 }
 
 /// Spawns a new client actor from a given stream.
@@ -790,7 +790,7 @@ pub async fn run_broker() -> std::io::Result<()> {
     let handle = start_unix_listener(objects.clone(), clients, subscriptions, calls).await?;
 
     #[cfg(windows)]
-    let handle = start_named_pipe_listener(objects.clone(), clients, subscriptions, calls);
+    let handle = start_named_pipe_listener(objects.clone(), clients, subscriptions, calls).await?;
 
     tokio::spawn(
         WorkerBuilder::new()
