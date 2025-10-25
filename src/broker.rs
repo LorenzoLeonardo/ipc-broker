@@ -21,8 +21,6 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
-#[cfg(unix)]
-use tokio::net::UnixListener;
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
@@ -529,6 +527,8 @@ async fn start_unix_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) -> std::io::Result<()> {
+    use tokio::{net::UnixListener, signal};
+
     use crate::rpc::UNIX_PATH;
 
     let _ = std::fs::remove_file(UNIX_PATH); // cleanup old
@@ -537,23 +537,31 @@ async fn start_unix_listener(
 
     tokio::spawn(async move {
         loop {
-            match unix_listener.accept().await {
-                Ok((stream, _)) => match stream.peer_addr() {
-                    Ok(_) => {
-                        log::info!("A Client connected via Unix: {UNIX_PATH}");
-                        spawn_client(
-                            stream,
-                            objects.clone(),
-                            clients.clone(),
-                            subscriptions.clone(),
-                            calls.clone(),
-                        );
+            tokio::select! {
+                _ = signal::ctrl_c() => {
+                    log::info!("Shutdown signal received, stopping unix socket listener.");
+                    break;
+                }
+                _ = async {
+                    match unix_listener.accept().await {
+                        Ok((stream, _)) => match stream.peer_addr() {
+                            Ok(_) => {
+                                log::info!("A Client connected via Unix: {UNIX_PATH}");
+                                spawn_client(
+                                    stream,
+                                    objects.clone(),
+                                    clients.clone(),
+                                    subscriptions.clone(),
+                                    calls.clone(),
+                                );
+                            }
+                            Err(e) => {
+                                log::error!("Unix peer error: {e}")
+                            }
+                        },
+                        Err(e) => log::error!("Unix accept error: {e}"),
                     }
-                    Err(e) => {
-                        log::error!("Unix peer error: {e}")
-                    }
-                },
-                Err(e) => log::error!("Unix accept error: {e:?}"),
+                } => {}
             }
         }
     });
