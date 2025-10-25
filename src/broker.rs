@@ -766,17 +766,19 @@ pub async fn run_broker() -> std::io::Result<()> {
 
     // Spawn listeners
     let mode = std::env::var("APP_MODE").unwrap_or_else(|_| "release".into());
-
+    let mut tcp_listener_handle = None;
     match mode.as_str() {
         "debug" => {
             log::info!("Running in {mode} mode — TCP listener on IP/port is enabled.");
-            start_tcp_listener(
-                objects.clone(),
-                clients.clone(),
-                subscriptions.clone(),
-                calls.clone(),
-            )
-            .await?;
+            tcp_listener_handle = Some(
+                start_tcp_listener(
+                    objects.clone(),
+                    clients.clone(),
+                    subscriptions.clone(),
+                    calls.clone(),
+                )
+                .await?,
+            );
         }
         "release" => {
             log::info!("Running in {mode} mode — TCP listener on IP/port is disabled.");
@@ -800,7 +802,12 @@ pub async fn run_broker() -> std::io::Result<()> {
             .spawn(),
     );
 
-    let _ = tokio::join!(listener_handle, rob_handle);
+    if let Some(tcp_handle) = tcp_listener_handle {
+        let _ = tokio::join!(listener_handle, rob_handle, tcp_handle);
+    } else {
+        let _ = tokio::join!(listener_handle, rob_handle);
+    }
+
     log::info!("ipc-broker shutting down...");
     Ok(())
 }
