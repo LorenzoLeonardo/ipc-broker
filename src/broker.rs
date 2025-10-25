@@ -787,19 +787,20 @@ pub async fn run_broker() -> std::io::Result<()> {
     }
 
     #[cfg(unix)]
-    let handle = start_unix_listener(objects.clone(), clients, subscriptions, calls).await?;
+    let listener_handle =
+        start_unix_listener(objects.clone(), clients, subscriptions, calls).await?;
 
     #[cfg(windows)]
-    let handle = start_named_pipe_listener(objects.clone(), clients, subscriptions, calls).await?;
+    let listener_handle =
+        start_named_pipe_listener(objects.clone(), clients, subscriptions, calls).await?;
 
-    tokio::spawn(
+    let rob_handle = tokio::spawn(
         WorkerBuilder::new()
             .add("rob", ListObjects { objects })
             .spawn(),
     );
-    // Wait for shutdown
-    tokio::signal::ctrl_c().await?;
-    let _ = handle.await;
+
+    let _ = tokio::join!(listener_handle, rob_handle);
     log::info!("ipc-broker shutting down...");
     Ok(())
 }
