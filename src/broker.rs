@@ -23,6 +23,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio::sync::{Mutex, mpsc};
+#[cfg(unix)]
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 // RPC protocol types
@@ -487,12 +489,12 @@ async fn start_tcp_listener(
     clients: SharedClients,
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
-) -> std::io::Result<()> {
+) -> std::io::Result<JoinHandle<()>> {
     let addr = get_local_ip_port();
     let tcp_listener = TcpListener::bind(addr.as_str()).await?;
     log::info!("Broker listening on TCP {addr}");
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = signal::ctrl_c() => {
@@ -523,7 +525,7 @@ async fn start_tcp_listener(
         }
     });
 
-    Ok(())
+    Ok(handle)
 }
 
 #[cfg(unix)]
@@ -535,7 +537,7 @@ async fn start_unix_listener(
     clients: SharedClients,
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
-) -> std::io::Result<()> {
+) -> std::io::Result<JoinHandle<()>> {
     use tokio::net::UnixListener;
 
     use crate::rpc::UNIX_PATH;
@@ -544,7 +546,7 @@ async fn start_unix_listener(
     let unix_listener = UnixListener::bind(UNIX_PATH)?;
     log::info!("Broker listening on Unix {UNIX_PATH}");
 
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = signal::ctrl_c() => {
@@ -574,8 +576,7 @@ async fn start_unix_listener(
             }
         }
     });
-
-    Ok(())
+    Ok(handle)
 }
 
 #[cfg(windows)]
@@ -786,10 +787,10 @@ pub async fn run_broker() -> std::io::Result<()> {
     }
 
     #[cfg(unix)]
-    start_unix_listener(objects.clone(), clients, subscriptions, calls).await?;
+    let handle = start_unix_listener(objects.clone(), clients, subscriptions, calls).await?;
 
     #[cfg(windows)]
-    start_named_pipe_listener(objects.clone(), clients, subscriptions, calls);
+    let handle = start_named_pipe_listener(objects.clone(), clients, subscriptions, calls);
 
     tokio::spawn(
         WorkerBuilder::new()
@@ -798,6 +799,7 @@ pub async fn run_broker() -> std::io::Result<()> {
     );
     // Wait for shutdown
     tokio::signal::ctrl_c().await?;
+    let _ = handle.await;
     log::info!("ipc-broker shutting down...");
     Ok(())
 }
