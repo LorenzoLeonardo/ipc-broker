@@ -571,9 +571,9 @@ fn start_named_pipe_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) {
-    use std::ffi::c_void;
-    use std::ptr::null_mut;
-    use tokio::net::windows::named_pipe::ServerOptions;
+    use std::{ffi::c_void, ptr::null_mut, time::Duration};
+
+    use tokio::{net::windows::named_pipe::ServerOptions, signal};
     use windows::{
         Win32::Foundation::{HLOCAL, LocalFree},
         Win32::Security::{
@@ -641,30 +641,38 @@ fn start_named_pipe_listener(
         let holder_clone = holder.clone();
         tokio::spawn(async move {
             loop {
-                match ServerOptions::new()
-                    .create_with_security_attributes_raw(PIPE_PATH, holder_clone.ptr)
-                {
-                    Ok(server) => {
-                        let objects = objects.clone();
-                        let clients = clients.clone();
-                        let subs = subscriptions.clone();
-                        let calls = calls.clone();
+                tokio::select! {
+                    _ = signal::ctrl_c() => {
+                        log::info!("Shutdown signal received, stopping NamedPipe listener.");
+                        break;
+                    }
+                    _ = async {
+                        match ServerOptions::new()
+                            .create_with_security_attributes_raw(PIPE_PATH, holder_clone.ptr)
+                        {
+                            Ok(server) => {
+                                let objects = objects.clone();
+                                let clients = clients.clone();
+                                let subs = subscriptions.clone();
+                                let calls = calls.clone();
 
-                        match server.connect().await {
-                            Ok(()) => {
-                                log::info!("Client connected via NamedPipe: {PIPE_PATH}");
-                                spawn_client(server, objects, clients, subs, calls);
+                                match server.connect().await {
+                                    Ok(()) => {
+                                        log::info!("Client connected via NamedPipe: {PIPE_PATH}");
+                                        spawn_client(server, objects, clients, subs, calls);
+                                    }
+                                    Err(e) => {
+                                        log::error!("NamedPipe connection failed: {e}");
+                                        tokio::time::sleep(Duration::from_millis(200)).await;
+                                    }
+                                }
                             }
                             Err(e) => {
-                                log::error!("NamedPipe connection failed: {e}");
-                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                log::error!("Pipe creation failed: {e}");
+                                tokio::time::sleep(Duration::from_millis(200)).await;
                             }
                         }
-                    }
-                    Err(e) => {
-                        log::error!("Pipe creation failed: {e}");
-                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    }
+                    } => {}
                 }
             }
         });
