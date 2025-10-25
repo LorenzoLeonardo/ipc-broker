@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::signal;
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
 
@@ -493,23 +494,31 @@ async fn start_tcp_listener(
 
     tokio::spawn(async move {
         loop {
-            match tcp_listener.accept().await {
-                Ok((stream, _)) => match stream.peer_addr() {
-                    Ok(peer) => {
-                        log::info!("A Client connected via TCP: {}:{}", peer.ip(), peer.port());
-                        spawn_client(
-                            stream,
-                            objects.clone(),
-                            clients.clone(),
-                            subscriptions.clone(),
-                            calls.clone(),
-                        );
+            tokio::select! {
+                _ = signal::ctrl_c() => {
+                    log::info!("Shutdown signal received, stopping TCP socket listener.");
+                    break;
+                }
+                _ = async {
+                    match tcp_listener.accept().await {
+                        Ok((stream, _)) => match stream.peer_addr() {
+                            Ok(peer) => {
+                                log::info!("A Client connected via TCP: {}:{}", peer.ip(), peer.port());
+                                spawn_client(
+                                    stream,
+                                    objects.clone(),
+                                    clients.clone(),
+                                    subscriptions.clone(),
+                                    calls.clone(),
+                                );
+                            }
+                            Err(e) => {
+                                log::error!("TCP peer error: {e}")
+                            }
+                        },
+                        Err(e) => log::error!("TCP accept error: {e}"),
                     }
-                    Err(e) => {
-                        log::error!("TCP peer error: {e}")
-                    }
-                },
-                Err(e) => log::error!("TCP accept error: {e}"),
+                } => {}
             }
         }
     });
@@ -527,7 +536,7 @@ async fn start_unix_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) -> std::io::Result<()> {
-    use tokio::{net::UnixListener, signal};
+    use tokio::net::UnixListener;
 
     use crate::rpc::UNIX_PATH;
 
@@ -789,6 +798,6 @@ pub async fn run_broker() -> std::io::Result<()> {
     );
     // Wait for shutdown
     tokio::signal::ctrl_c().await?;
-    log::debug!("Broker shutting down...");
+    log::info!("ipc-broker shutting down...");
     Ok(())
 }
