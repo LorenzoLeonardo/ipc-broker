@@ -575,7 +575,13 @@ fn start_named_pipe_listener(
     use std::ptr::null_mut;
     use tokio::net::windows::named_pipe::ServerOptions;
     use windows::{
-        Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES},
+        Win32::Foundation::{HLOCAL, LocalFree},
+        Win32::Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
+        },
         core::BOOL,
     };
 
@@ -583,39 +589,27 @@ fn start_named_pipe_listener(
 
     log::info!("Broker listening on NamedPipe {}", PIPE_PATH);
     unsafe {
-        use windows::{
-            Win32::Security::Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-            },
-            core::PCWSTR,
-        };
-
         let sddl = windows::core::w!("D:(A;;GA;;;WD)");
         let mut p_sd: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR(null_mut());
 
         let success = ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            PCWSTR::from_raw(sddl.as_ptr()),
+            sddl,
             SDDL_REVISION_1,
             &mut p_sd,
             Some(null_mut()),
         );
 
-        if success.is_err() {
-            let err = std::io::Error::last_os_error();
-            log::error!("Failed to create security descriptor: {}", err);
+        if let Err(e) = success {
+            log::error!("Failed to create security descriptor: {e}");
             return;
         }
 
-        //
-        // Build SECURITY_ATTRIBUTES pointing to that descriptor
-        //
         let sa_box = Box::new(SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: p_sd.0,
             bInheritHandle: BOOL(0),
         });
 
-        // Leak it so pointer is valid for 'static lifetime
         let sa_raw_ptr = Box::into_raw(sa_box) as *mut c_void;
 
         struct SecurityAttributesHolder {
@@ -623,6 +617,25 @@ fn start_named_pipe_listener(
         }
         unsafe impl Send for SecurityAttributesHolder {}
         unsafe impl Sync for SecurityAttributesHolder {}
+
+        // Since we are not freeing the SECURITY_DESCRIPTOR itself, we need to ensure
+        // we free the SECURITY_ATTRIBUTES when done.
+        impl Drop for SecurityAttributesHolder {
+            fn drop(&mut self) {
+                unsafe {
+                    if self.ptr.is_null() {
+                        return;
+                    }
+                    let handle = HLOCAL(self.ptr);
+                    let res = LocalFree(Some(handle));
+
+                    if !res.0.is_null() {
+                        log::warn!("LocalFree failed when freeing SECURITY_DESCRIPTOR");
+                    }
+                    log::info!("SecurityAttributesHolder dropped and memory freed.");
+                }
+            }
+        }
 
         let holder = Arc::new(SecurityAttributesHolder { ptr: sa_raw_ptr });
         let holder_clone = holder.clone();
