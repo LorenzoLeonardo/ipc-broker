@@ -195,46 +195,57 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
     }
 
     loop {
-        let buf = match read_packet(&mut stream).await {
-            Ok(data) => data,
-            Err(err) => {
-                log::error!("Read error : {err}");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                log::info!("Ctrl-C received, shutting down worker loop.");
                 break;
             }
-        };
 
-        if let Ok(req) = serde_json::from_slice::<RpcRequest>(&buf) {
-            match req {
-                RpcRequest::Call {
-                    call_id,
-                    object_name,
-                    method,
-                    args,
-                } => {
-                    if let Some(obj) = objects.get(&object_name) {
-                        log::debug!("Worker handling {object_name}.{method}({args})");
-                        let result = obj.call(&method, &args).await;
+            _ = async {
+                let buf = match read_packet(&mut stream).await {
+                    Ok(data) => data,
+                    Err(err) => {
+                        log::error!("Read error: {err}");
+                        return; // just exit this async block
+                    }
+                };
 
-                        let resp = RpcResponse::Result {
+                if let Ok(req) = serde_json::from_slice::<RpcRequest>(&buf) {
+                    match req {
+                        RpcRequest::Call {
                             call_id,
                             object_name,
-                            value: result,
-                        };
+                            method,
+                            args,
+                        } => {
+                            if let Some(obj) = objects.get(&object_name) {
+                                log::debug!("Worker handling {object_name}.{method}({args})");
+                                let result = obj.call(&method, &args).await;
 
-                        let resp_bytes = serde_json::to_vec(&resp).unwrap();
-                        write_packet(&mut stream, &resp_bytes).await?;
-                    } else {
-                        log::error!("Unknown object: {object_name}");
+                                let resp = RpcResponse::Result {
+                                    call_id,
+                                    object_name,
+                                    value: result,
+                                };
+
+                                let resp_bytes = serde_json::to_vec(&resp).unwrap();
+                                if let Err(e) = write_packet(&mut stream, &resp_bytes).await {
+                                    log::error!("Write error: {e}");
+                                }
+                            } else {
+                                log::error!("Unknown object: {object_name}");
+                            }
+                        }
+                        _ => {
+                            log::debug!("Worker got unsupported request: {req:?}");
+                        }
                     }
+                } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf) {
+                    log::debug!("Worker got response: {resp:?}");
+                } else {
+                    log::error!("Invalid JSON value from broker");
                 }
-                _ => {
-                    log::debug!("Worker got unsupported request: {req:?}");
-                }
-            }
-        } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf) {
-            log::debug!("Worker got response: {resp:?}");
-        } else {
-            log::error!("Invalid JSON value from broker");
+            } => {}
         }
     }
     Ok(())
