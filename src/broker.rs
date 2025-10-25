@@ -611,7 +611,7 @@ fn start_named_pipe_listener(
         //
         let sa_box = Box::new(SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: p_sd.0 as *mut c_void,
+            lpSecurityDescriptor: p_sd.0,
             bInheritHandle: BOOL(0),
         });
 
@@ -639,17 +639,17 @@ fn start_named_pipe_listener(
 
                         match server.connect().await {
                             Ok(()) => {
-                                log::info!("Client connected via NamedPipe: {}", PIPE_PATH);
+                                log::info!("Client connected via NamedPipe: {PIPE_PATH}");
                                 spawn_client(server, objects, clients, subs, calls);
                             }
                             Err(e) => {
-                                log::error!("NamedPipe connection failed: {:?}", e);
+                                log::error!("NamedPipe connection failed: {e}");
                                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                             }
                         }
                     }
                     Err(e) => {
-                        log::error!("Pipe creation failed: {:?}", e);
+                        log::error!("Pipe creation failed: {e}");
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 }
