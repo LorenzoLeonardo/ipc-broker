@@ -4,6 +4,11 @@ A lightweight **inter-process communication (IPC) broker** built with [Tokio](ht
 It provides **RPC**, **publish/subscribe eventing**, and supports both **TCP** and **Unix domain sockets** for Linux and macOS,
 and both **TCP** and **Named Pipes** for Windows.
 
+[![Latest Version](https://img.shields.io/crates/v/ipc-broker.svg)](https://crates.io/crates/ipc-broker)
+[![License](https://img.shields.io/github/license/LorenzoLeonardo/ipc-broker.svg)](LICENSE-MIT)
+[![Documentation](https://docs.rs/ipc-broker/badge.svg)](https://docs.rs/ipc-broker)
+[![Build Status](https://github.com/LorenzoLeonardo/ipc-broker/workflows/Rust/badge.svg)](https://github.com/LorenzoLeonardo/ipc-broker/actions)
+[![Downloads](https://img.shields.io/crates/d/ipc-broker)](https://crates.io/crates/ipc-broker)
 ---
 
 ## ✨ Features
