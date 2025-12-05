@@ -65,10 +65,6 @@ The broker will listen on:
 
 ### 2. Run a Worker
 
-Your worker connects to the broker and registers callable objects.
-
-Example:
-
 ```rust
 use async_trait::async_trait;
 use ipc_broker::worker::{SharedObject, WorkerBuilder};
@@ -107,7 +103,77 @@ async fn main() -> std::io::Result<()> {
 
 ---
 
-### 3. Use the `rob` Command-Line Tool
+### 3. Run a Client
+
+```rust
+use ipc_broker::client::IPCClient;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Param {
+    a: i32,
+    b: i32,
+}
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    // --- pick transport ---
+    let proxy = IPCClient::connect().await?;
+
+    let response = proxy
+        .remote_call::<Param, Value>("math", "add", Param { a: 10, b: 32 })
+        .await?;
+
+    println!("Client got response: {response}");
+
+    Ok(())
+}
+```
+
+---
+
+### 4. Publish Events
+
+```rust
+use ipc_broker::client::IPCClient;
+use serde_json::Value;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let proxy = IPCClient::connect().await?;
+
+    proxy
+        .publish("sensor", "temperature", &Value::String("25.6°C".into()))
+        .await?;
+
+    println!("[Publisher] done broadcasting");
+    Ok(())
+}
+```
+
+---
+
+### 5. Subscribe to an Event
+
+```rust
+use ipc_broker::client::IPCClient;
+
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let client = IPCClient::connect().await?;
+
+    client
+        .subscribe_async("sensor", "temperature", |value| {
+            println!("[News] Received: {value:?}");
+        })
+        .await;
+
+    tokio::signal::ctrl_c().await?;
+    Ok(())
+}
+```
+### 6. Use the `rob` Command-Line Tool
 
 The **`rob`** utility is a helper CLI for interacting with the broker.
 
