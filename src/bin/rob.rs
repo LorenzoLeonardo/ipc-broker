@@ -131,6 +131,7 @@
 //! | listen | `rob listen sensor update` | Subscribe to sensor updates |
 //!
 use ipc_broker::client::IPCClient;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 fn format_value(value: &Value, indent: usize) -> String {
@@ -222,6 +223,23 @@ fn parse_signature(sig: &str, args: &mut std::slice::Iter<String>) -> Result<Val
 const APP_NAME: &str = "rob";
 const APP_VERSION: &str = env!("ROB_VERSION");
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct IoErrorSerde {
+    pub code: i32,
+    pub kind: String,
+    pub message: String,
+}
+
+impl From<std::io::Error> for IoErrorSerde {
+    fn from(err: std::io::Error) -> Self {
+        IoErrorSerde {
+            code: err.kind() as i32,
+            kind: err.kind().to_string(),
+            message: err.to_string(),
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -268,12 +286,15 @@ async fn main() -> std::io::Result<()> {
 
     // --- pick transport ---
     if command == "call" {
-        let proxy = IPCClient::connect().await?;
-
-        let response = proxy
-            .remote_call::<Value, Value>(object, method, parsed_args)
-            .await?;
-
+        let response = match IPCClient::connect().await {
+            Ok(proxy) => proxy
+                .remote_call::<Value, Value>(object, method, parsed_args)
+                .await
+                .unwrap_or_else(|err| serde_json::json!(IoErrorSerde::from(err))),
+            Err(err) => {
+                serde_json::json!(IoErrorSerde::from(err))
+            }
+        };
         println!("Result:\n{}", format_value(&response, 0));
     } else if command == "listen" {
         println!("Listening for: object={object} method={method}. Press ctrl+c to exit.\n\n");
@@ -286,9 +307,17 @@ async fn main() -> std::io::Result<()> {
             .await;
         tokio::signal::ctrl_c().await?;
     } else if command == "send" {
-        let proxy = IPCClient::connect().await?;
-        println!("Sending: {parsed_args}");
-        proxy.publish(object, method, &parsed_args).await?;
+        let response = match IPCClient::connect().await {
+            Ok(proxy) => proxy
+                .publish(object, method, &parsed_args)
+                .await
+                .map(|_| serde_json::Value::Null)
+                .unwrap_or_else(|err| serde_json::json!(IoErrorSerde::from(err))),
+            Err(err) => {
+                serde_json::json!(IoErrorSerde::from(err))
+            }
+        };
+        println!("Result:\n{}", format_value(&response, 0));
     } else {
         eprintln!("Unknown command: {command}");
     }
