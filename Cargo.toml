@@ -38,3 +38,12 @@ features = [
     "Win32_System_Memory"
 ]
 
+[profile.release]
+opt-level = "z"          # optimize for minimum size
+lto = true               # full link-time optimization
+codegen-units = 1        # better optimization, smaller binary
+panic = "abort"          # remove unwind machinery
+strip = "symbols"        # remove all symbols
+debug = false            # remove debug info
+incremental = false      # prevent extra metadata
+overflow-checks = false  # remove overflow checks
