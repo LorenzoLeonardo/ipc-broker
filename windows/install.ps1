@@ -23,9 +23,15 @@ if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
 
 # Remove old executable and directory
 if (Test-Path "$DestDir\$ExecutableName") {
-    Write-Host "Removing old executable..."
+    Write-Host "Removing old $ExecutableName executable..."
     Remove-Item "$DestDir\$ExecutableName" -Force
 }
+
+if (Test-Path "$DestDir\rob.exe") {
+    Write-Host "Removing old rob.exe executable..."
+    Remove-Item "$DestDir\rob.exe" -Force
+}
+
 
 if (Test-Path $DestDir) {
     Write-Host "Removing old directory..."
@@ -56,6 +62,7 @@ Write-Host "=== Installing new binaries ==="
 New-Item -ItemType Directory -Force -Path $DestDir | Out-Null
 
 Copy-Item "$PSScriptRoot\..\target\release\$ExecutableName" -Destination $DestDir
+Copy-Item "$PSScriptRoot\..\target\release\rob.exe" -Destination $DestDir
 
 # === Register new Windows service ===
 Write-Host "=== Registering new service using NSSM ==="
