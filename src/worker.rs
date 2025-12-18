@@ -262,8 +262,9 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
 
                                 let resp_bytes = serde_json::to_vec(&resp).unwrap();
 
-                                if let Err(e) = write_packet(&mut stream, &resp_bytes).await {
-                                    log::error!("Write error (closing connection): {e}");
+                                if let Err(err) = write_packet(&mut stream, &resp_bytes).await {
+                                    log::error!("Write error (closing connection): {err}");
+                                    error = Some(err);
                                     break;
                                 }
                             } else {
