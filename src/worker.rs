@@ -116,7 +116,7 @@ impl WorkerBuilder {
     /// pipe depending on platform and environment) and begins handling
     /// RPC requests.
     pub async fn spawn(self) -> std::io::Result<()> {
-        run_worker(self.objects).await
+        worker_supervisor(self.objects).await
     }
 }
 
@@ -124,6 +124,35 @@ impl Default for WorkerBuilder {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// This supervisor will manage the worker whether to retry if connection failed or stop gracefully
+/// with an OS signal to stop.
+async fn worker_supervisor(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io::Result<()> {
+    use std::time::Duration;
+
+    loop {
+        match run_worker(objects.clone()).await {
+            Ok(_) => {
+                log::warn!("Worker exited normally, ending service now...");
+                break;
+            }
+            Err(e) => {
+                log::error!("Worker has failed to connect: {e}, retrying. . .");
+            }
+        }
+
+        // ⏳ Backoff
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                log::info!("Supervisor shutting down");
+                break;
+            }
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+        }
+    }
+
+    Ok(())
 }
 
 /// Worker runtime function that handles broker connection and RPC calls.
@@ -194,6 +223,7 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
         write_packet(&mut stream, &data).await?;
     }
 
+    let mut error = None;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -201,12 +231,15 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                 break;
             }
 
-            _ = async {
-                let buf = match read_packet(&mut stream).await {
+            result = read_packet(&mut stream) => {
+                let buf = match result {
                     Ok(data) => data,
                     Err(err) => {
-                        log::error!("Read error: {err}");
-                        return; // just exit this async block
+                        // ✅ Log once
+                        log::error!("Connection lost: {err}");
+                        // ✅ Exit loop
+                        error = Some(err);
+                        break;
                     }
                 };
 
@@ -219,7 +252,6 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                             args,
                         } => {
                             if let Some(obj) = objects.get(&object_name) {
-                                log::debug!("Worker handling {object_name}.{method}({args})");
                                 let result = obj.call(&method, &args).await;
 
                                 let resp = RpcResponse::Result {
@@ -229,15 +261,17 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                                 };
 
                                 let resp_bytes = serde_json::to_vec(&resp).unwrap();
+
                                 if let Err(e) = write_packet(&mut stream, &resp_bytes).await {
-                                    log::error!("Write error: {e}");
+                                    log::error!("Write error (closing connection): {e}");
+                                    break;
                                 }
                             } else {
                                 log::error!("Unknown object: {object_name}");
                             }
                         }
                         _ => {
-                            log::debug!("Worker got unsupported request: {req:?}");
+                            log::debug!("Unsupported request: {req:?}");
                         }
                     }
                 } else if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&buf) {
@@ -245,8 +279,13 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
                 } else {
                     log::error!("Invalid JSON value from broker");
                 }
-            } => {}
+            }
         }
     }
-    Ok(())
+
+    if let Some(error) = error {
+        Err(error)
+    } else {
+        Ok(())
+    }
 }
