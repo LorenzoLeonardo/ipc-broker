@@ -1,3 +1,4 @@
+#[cfg(unix)]
 pub mod activate;
 pub mod broker;
 pub mod client;

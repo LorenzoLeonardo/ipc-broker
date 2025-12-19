@@ -141,7 +141,9 @@ impl IPCClient {
 
                                 // Wait for one response
                                 match req {
-                                    RpcRequest::Call { .. } | RpcRequest::RegisterObject { .. } | RpcRequest::HasObject { .. } | RpcRequest::RegisterService { .. } => {
+                                    RpcRequest::Call { .. } | RpcRequest::RegisterObject { .. }
+                                    | RpcRequest::HasObject { .. }
+                                    | RpcRequest::RegisterService { .. } => {
                                         // Only these expect a response
                                         match read_packet(&mut stream).await {
                                             Ok(data) => {
