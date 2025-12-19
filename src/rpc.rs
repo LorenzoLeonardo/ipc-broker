@@ -40,6 +40,10 @@ pub enum RpcRequest {
     RegisterObject {
         object_name: String,
     },
+    RegisterService {
+        object_name: String,
+        service_name: String,
+    },
     Call {
         call_id: CallId,
         object_name: String,
