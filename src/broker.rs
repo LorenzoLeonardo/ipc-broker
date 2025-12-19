@@ -26,6 +26,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
 
+#[cfg(unix)]
 use crate::activate::{self, ServiceEntry, ServiceState, SharedServices};
 // RPC protocol types
 use crate::rpc::TCP_ADDR;
@@ -111,6 +112,7 @@ struct ClientActor<S> {
     clients: SharedClients,
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
+    #[cfg(unix)]
     services: SharedServices,
 }
 
@@ -129,6 +131,7 @@ where
         let clients = self.clients.clone();
         let subscriptions = self.subscriptions.clone();
         let calls = self.calls.clone();
+        #[cfg(unix)]
         let services = self.services.clone();
         let mut rx = self.rx;
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -140,6 +143,7 @@ where
             let clients = self.clients.clone();
             let subs = self.subscriptions.clone();
             let calls = self.calls.clone();
+            #[cfg(unix)]
             let services = self.services.clone();
             async move {
                 let res = Self::reader_loop(
@@ -149,6 +153,7 @@ where
                     clients,
                     subs,
                     calls,
+                    #[cfg(unix)]
                     services,
                 )
                 .await;
@@ -169,6 +174,7 @@ where
             &objects,
             &subscriptions,
             &calls,
+            #[cfg(unix)]
             &services,
         )
         .await;
@@ -187,7 +193,7 @@ where
         objects: &SharedObjects,
         subscriptions: &SharedSubscriptions,
         calls: &SharedCalls,
-        services: &SharedServices,
+        #[cfg(unix)] services: &SharedServices,
     ) {
         log::debug!("Cleaning up client {client_id:?}");
 
@@ -210,14 +216,15 @@ where
         // 4️⃣ Remove calls where this client was the caller
         calls.lock().await.retain(|_, caller| caller != client_id);
 
-        // Snapshot remaining active calls
-        let active_calls: HashSet<CallId> = {
-            let calls = calls.lock().await;
-            calls.keys().cloned().collect()
-        };
-
         // 5️⃣ Cleanup services
+        #[cfg(unix)]
         {
+            // Snapshot remaining active calls
+            let active_calls: HashSet<CallId> = {
+                let calls = calls.lock().await;
+                calls.keys().cloned().collect()
+            };
+
             let mut services = services.lock().await;
 
             for service in services.values_mut() {
@@ -272,7 +279,7 @@ where
         clients: SharedClients,
         subscriptions: SharedSubscriptions,
         calls: SharedCalls,
-        services: SharedServices,
+        #[cfg(unix)] services: SharedServices,
     ) where
         R: AsyncRead + Unpin,
     {
@@ -281,6 +288,7 @@ where
             clients,
             subscriptions,
             calls,
+            #[cfg(unix)]
             services,
         };
 
@@ -353,6 +361,7 @@ struct ServerState {
     clients: SharedClients,
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
+    #[cfg(unix)]
     services: SharedServices,
 }
 
@@ -368,8 +377,14 @@ impl ServerState {
                 object_name,
                 service_name,
             } => {
+                #[cfg(unix)]
                 self.handle_register_service(object_name, service_name, client_id)
                     .await;
+
+                #[cfg(windows)]
+                {
+                    unimplemented!("No applicable on windows, {object_name}, {service_name}");
+                }
             }
             RpcRequest::Call {
                 call_id,
@@ -435,6 +450,7 @@ impl ServerState {
             .await
             .insert(object_name.clone(), client_id.clone());
 
+        #[cfg(unix)]
         let pending_calls = {
             let mut services = self.services.lock().await;
             if let Some(service) = services.get_mut(&object_name) {
@@ -446,6 +462,7 @@ impl ServerState {
             }
         };
 
+        #[cfg(unix)]
         // Send queued calls
         for req in pending_calls {
             Self::send_to_client(&self.clients, client_id, &req).await;
@@ -459,6 +476,7 @@ impl ServerState {
         .await;
     }
 
+    #[cfg(unix)]
     async fn handle_register_service(
         &self,
         object_name: String,
@@ -531,60 +549,76 @@ impl ServerState {
             .await;
             return;
         }
-
-        // Whether we need to start the service
-        let mut start_service = false;
-        let mut service_name = None;
-
-        // 2️⃣ Known but not running?
+        #[cfg(unix)]
         {
-            let mut services = self.services.lock().await;
+            // Whether we need to start the service
+            let mut start_service = false;
+            let mut service_name = None;
 
-            if let Some(service) = services.get_mut(&object_name) {
-                match service.state {
-                    ServiceState::Stopped => {
-                        log::info!("Auto-starting service {object_name}");
-                        service.state = ServiceState::Starting;
-                        service.pending_calls.push(RpcRequest::Call {
-                            call_id,
-                            object_name,
-                            method,
-                            args,
-                        });
+            // 2️⃣ Known but not running?
+            {
+                let mut services = self.services.lock().await;
 
-                        start_service = true;
-                        service_name = Some(service.service_name.clone());
+                if let Some(service) = services.get_mut(&object_name) {
+                    match service.state {
+                        ServiceState::Stopped => {
+                            log::info!("Auto-starting service {object_name}");
+                            service.state = ServiceState::Starting;
+                            service.pending_calls.push(RpcRequest::Call {
+                                call_id,
+                                object_name,
+                                method,
+                                args,
+                            });
+
+                            start_service = true;
+                            service_name = Some(service.service_name.clone());
+                        }
+                        ServiceState::Starting => {
+                            service.pending_calls.push(RpcRequest::Call {
+                                call_id,
+                                object_name,
+                                method,
+                                args,
+                            });
+                        }
+                        _ => {}
                     }
-                    ServiceState::Starting => {
-                        service.pending_calls.push(RpcRequest::Call {
-                            call_id,
+                } else {
+                    // Unknown service
+                    let message = format!("No such object '{object_name}'");
+                    Self::send_to_client(
+                        &self.clients,
+                        client_id,
+                        &RpcResponse::Error {
+                            call_id: Some(call_id),
                             object_name,
-                            method,
-                            args,
-                        });
-                    }
-                    _ => {}
+                            message,
+                        },
+                    )
+                    .await;
+                    return;
                 }
-            } else {
-                // Unknown service
-                let message = format!("No such object '{object_name}'");
-                Self::send_to_client(
-                    &self.clients,
-                    client_id,
-                    &RpcResponse::Error {
-                        call_id: Some(call_id),
-                        object_name,
-                        message,
-                    },
-                )
-                .await;
-                return;
-            }
-        } // 🔓 lock released here
+            } // 🔓 lock released here
 
-        // 3️⃣ Start service OUTSIDE the lock
-        if start_service && let Some(name) = service_name {
-            activate::spawn_service(&name);
+            // 3️⃣ Start service OUTSIDE the lock
+            if start_service && let Some(name) = service_name {
+                activate::spawn_service(&name);
+            }
+        }
+        #[cfg(windows)]
+        {
+            let message = format!("No such object '{object_name}'");
+            Self::send_to_client(
+                &self.clients,
+                client_id,
+                &RpcResponse::Error {
+                    call_id: Some(call_id),
+                    object_name,
+                    message,
+                },
+            )
+            .await;
         }
     }
 
@@ -681,7 +715,7 @@ async fn start_tcp_listener(
     clients: SharedClients,
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
-    services: SharedServices,
+    #[cfg(unix)] services: SharedServices,
 ) -> std::io::Result<JoinHandle<()>> {
     let addr = get_local_ip_port();
     let tcp_listener = TcpListener::bind(addr.as_str()).await?;
@@ -705,6 +739,7 @@ async fn start_tcp_listener(
                                     clients.clone(),
                                     subscriptions.clone(),
                                     calls.clone(),
+                                    #[cfg(unix)]
                                     services.clone()
                                 );
                             }
@@ -903,7 +938,7 @@ fn spawn_client<S>(
     clients: SharedClients,
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
-    services: SharedServices,
+    #[cfg(unix)] services: SharedServices,
 ) where
     S: Stream + 'static,
 {
@@ -927,6 +962,7 @@ fn spawn_client<S>(
         clients,
         subscriptions,
         calls,
+        #[cfg(unix)]
         services,
     };
     tokio::spawn(actor.run());
@@ -962,8 +998,9 @@ pub async fn run_broker() -> std::io::Result<()> {
     let clients: SharedClients = Arc::new(Mutex::new(HashMap::new()));
     let subscriptions: SharedSubscriptions = Arc::new(Mutex::new(HashMap::new()));
     let calls: SharedCalls = Arc::new(Mutex::new(HashMap::new()));
+    #[cfg(unix)]
     let services: SharedServices = Arc::new(Mutex::new(HashMap::new()));
-
+    #[cfg(unix)]
     activate::load_service_activations(&services).await;
 
     // Spawn listeners
@@ -978,6 +1015,7 @@ pub async fn run_broker() -> std::io::Result<()> {
                     clients.clone(),
                     subscriptions.clone(),
                     calls.clone(),
+                    #[cfg(unix)]
                     services.clone(),
                 )
                 .await?,
