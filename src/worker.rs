@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, future, sync::Arc};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 #[cfg(windows)]
@@ -8,6 +8,7 @@ use tokio::net::windows::named_pipe::ClientOptions;
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpStream,
+    sync::watch,
 };
 
 use crate::{
@@ -82,6 +83,7 @@ pub trait SharedObject: Send + Sync {
 /// ```
 pub struct WorkerBuilder {
     objects: HashMap<String, Arc<dyn SharedObject>>,
+    shutdown_rx: Option<watch::Receiver<bool>>,
 }
 
 impl WorkerBuilder {
@@ -89,6 +91,7 @@ impl WorkerBuilder {
     pub fn new() -> Self {
         Self {
             objects: HashMap::new(),
+            shutdown_rx: None,
         }
     }
 
@@ -110,13 +113,19 @@ impl WorkerBuilder {
         self
     }
 
+    pub fn with_graceful_shutdown(mut self) -> (Self, watch::Sender<bool>) {
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        self.shutdown_rx = Some(shutdown_rx);
+        (self, shutdown_tx)
+    }
+
     /// Spawn the worker runtime with all registered objects.
     ///
     /// This connects to the broker (via TCP, Unix socket, or Windows named
     /// pipe depending on platform and environment) and begins handling
     /// RPC requests.
     pub async fn spawn(self) -> std::io::Result<()> {
-        worker_supervisor(self.objects).await
+        worker_supervisor(self.objects, self.shutdown_rx).await
     }
 }
 
@@ -128,11 +137,15 @@ impl Default for WorkerBuilder {
 
 /// This supervisor will manage the worker whether to retry if connection failed or stop gracefully
 /// with an OS signal to stop.
-async fn worker_supervisor(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io::Result<()> {
+async fn worker_supervisor(
+    objects: HashMap<String, Arc<dyn SharedObject>>,
+    shutdown_rx: Option<watch::Receiver<bool>>,
+) -> std::io::Result<()> {
     use std::time::Duration;
 
     loop {
-        match run_worker(objects.clone()).await {
+        let shutdown_rx = shutdown_rx.clone();
+        match run_worker(objects.clone(), shutdown_rx.clone()).await {
             Ok(_) => {
                 log::warn!("Worker exited normally, ending service now...");
                 break;
@@ -142,10 +155,20 @@ async fn worker_supervisor(objects: HashMap<String, Arc<dyn SharedObject>>) -> s
             }
         }
 
-        // ⏳ Backoff
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 log::info!("Supervisor shutting down");
+                break;
+            }
+            // ✅ Optional graceful shutdown
+            _ = async {
+                if let Some(mut rx) = shutdown_rx {
+                    let _ = rx.changed().await;
+                } else {
+                    future::pending::<()>().await;
+                }
+            } => {
+                log::info!("Shutdown signal received (watch)");
                 break;
             }
             _ = tokio::time::sleep(Duration::from_secs(2)) => {}
@@ -172,7 +195,10 @@ async fn worker_supervisor(objects: HashMap<String, Arc<dyn SharedObject>>) -> s
 /// # Errors
 ///
 /// Returns an error if the connection to the broker fails or if I/O errors occur.
-async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io::Result<()> {
+async fn run_worker(
+    objects: HashMap<String, Arc<dyn SharedObject>>,
+    shutdown_rx: Option<watch::Receiver<bool>>,
+) -> std::io::Result<()> {
     let mut stream: Box<dyn AsyncStream + Send + Unpin> =
         if let Ok(ip) = std::env::var("BROKER_ADDR") {
             let tcp = TcpStream::connect(ip.as_str()).await?;
@@ -225,12 +251,23 @@ async fn run_worker(objects: HashMap<String, Arc<dyn SharedObject>>) -> std::io:
 
     let mut error = None;
     loop {
+        let shutdown_rx = shutdown_rx.clone();
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 log::info!("Ctrl-C received, shutting down worker loop.");
                 break;
             }
-
+            // ✅ Optional graceful shutdown
+            _ = async {
+                if let Some(mut rx) = shutdown_rx {
+                    let _ = rx.changed().await;
+                } else {
+                    future::pending::<()>().await;
+                }
+            } => {
+                log::info!("Shutdown signal received (watch)");
+                break;
+            }
             result = read_packet(&mut stream) => {
                 let buf = match result {
                     Ok(data) => data,
