@@ -323,12 +323,10 @@ async fn unix_stress_broker() {
                 // non-blocking read
                 if let Ok(Ok(n)) =
                     timeout(Duration::from_millis(50), conn.read_some(&mut read_buf)).await
+                    && n > 0
+                    && let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n])
                 {
-                    if n > 0 {
-                        if let Ok(val) = serde_json::from_slice::<RpcResponse>(&read_buf[..n]) {
-                            log::debug!("Client {i} got response: {val:?}");
-                        }
-                    }
+                    log::debug!("Client {i} got response: {val:?}");
                 }
 
                 ops_done += 1;
