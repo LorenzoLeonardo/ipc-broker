@@ -101,8 +101,8 @@ pub async fn load_service_activations(services: &SharedServices) {
 }
 
 pub fn spawn_service(unit: &str) {
-    let status = process::Command::new("sudo")
-        .arg("systemctl")
+    let status = process::Command::new("/usr/bin/sudo")
+        .arg("/usr/bin/systemctl")
         .arg("restart")
         .arg(unit)
         .status();
