@@ -134,32 +134,57 @@ use ipc_broker::client::IPCClient;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-fn format_value(value: &Value, indent: usize) -> String {
+fn print_value(value: &serde_json::Value, indent: usize, key_opt: Option<&str>) {
     let padding = " ".repeat(indent);
+
     match value {
-        Value::Null => format!("{padding}Null"),
-        Value::Bool(b) => format!("{padding}{b}"),
-        Value::Number(n) => format!("{padding}{n}"),
-        Value::String(s) => format!("{padding}\"{s}\""),
-        Value::Array(arr) => {
-            let mut out = format!("{padding}List:\n");
-            for (i, v) in arr.iter().enumerate() {
-                out.push_str(&format!(
-                    "{padding}  {i} : :{}\n",
-                    format_value(v, indent + 1)
-                ));
+        serde_json::Value::Null => {
+            if let Some(key) = key_opt {
+                println!("{padding}{key} : : Null");
+            } else {
+                println!("{padding}Null");
             }
-            out
         }
-        Value::Object(obj) => {
-            let mut out = format!("{padding}Map:\n");
-            for (k, v) in obj {
-                out.push_str(&format!(
-                    "{padding}  {k} : :{}\n",
-                    format_value(v, indent + 1)
-                ));
+        serde_json::Value::Bool(b) => {
+            if let Some(key) = key_opt {
+                println!("{padding}{key} : : {b}");
+            } else {
+                println!("{padding}{b}");
             }
-            out
+        }
+        serde_json::Value::Number(n) => {
+            if let Some(key) = key_opt {
+                println!("{padding}{key} : : {n}");
+            } else {
+                println!("{padding}{n}");
+            }
+        }
+        serde_json::Value::String(s) => {
+            if let Some(key) = key_opt {
+                println!("{padding}{key} : : \"{s}\"");
+            } else {
+                println!("{padding}\"{s}\"");
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            if let Some(key) = key_opt {
+                println!("{padding}{key} : : List:");
+            } else {
+                println!("{padding}List:");
+            }
+            for (i, v) in arr.iter().enumerate() {
+                print_value(v, indent + 3, Some(&i.to_string()));
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            if let Some(key) = key_opt {
+                println!("{padding}{key} : : Map:");
+            } else {
+                println!("{padding}Map:");
+            }
+            for (k, v) in obj {
+                print_value(v, indent + 3, Some(k));
+            }
         }
     }
 }
@@ -295,14 +320,16 @@ async fn main() -> std::io::Result<()> {
                 serde_json::json!(IoErrorSerde::from(err))
             }
         };
-        println!("Result:\n{}", format_value(&response, 0));
+        println!("\nResult:");
+        print_value(&response, 0, None);
     } else if command == "listen" {
         println!("Listening for: object={object} method={method}. Press ctrl+c to exit.\n\n");
         let proxy = IPCClient::connect().await?;
 
         proxy
             .subscribe_async(object, method, |param| {
-                println!("Result:\n{}", format_value(&param, 0));
+                println!("\nResult:");
+                print_value(&param, 0, None);
             })
             .await;
         tokio::signal::ctrl_c().await?;
@@ -317,7 +344,8 @@ async fn main() -> std::io::Result<()> {
                 serde_json::json!(IoErrorSerde::from(err))
             }
         };
-        println!("Result:\n{}", format_value(&response, 0));
+        println!("\nResult:");
+        print_value(&response, 0, None);
     } else {
         eprintln!("Unknown command: {command}");
     }
