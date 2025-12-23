@@ -209,6 +209,11 @@ impl IPCClient {
                             }
                         }
                     }
+                    else => {
+                        // This should never trigger now, but prevents future panics
+                        log::warn!("All select branches disabled — exiting loop defensively");
+                        break;
+                    }
                 }
             }
         });
