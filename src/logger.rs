@@ -5,6 +5,17 @@ use fern::Dispatch;
 use log::LevelFilter;
 
 fn logging_level() -> LevelFilter {
+    // 1. Check for debug files near executable
+    if let Ok(exe_path) = std::env::current_exe()
+        && let Some(dir) = exe_path.parent()
+    {
+        if dir.join("trace").exists() {
+            return LevelFilter::Trace;
+        }
+        if dir.join("debug").exists() {
+            return LevelFilter::Debug;
+        }
+    }
     match std::env::var("BROKER_DEBUG").as_deref() {
         Ok("trace") => LevelFilter::Trace,
         Ok("debug") => LevelFilter::Debug,
@@ -55,4 +66,5 @@ pub fn setup_logger() {
     {
         log::error!("Logger initialization failed: {e}");
     }
+    log::debug!("Enabled log {level_filter}.");
 }
