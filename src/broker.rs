@@ -30,7 +30,7 @@ use uuid::Uuid;
 use crate::activate::{self, ServiceEntry, ServiceState, SharedServices};
 // RPC protocol types
 use crate::rpc::TCP_ADDR;
-use crate::rpc::{CallId, ClientId, RpcRequest, RpcResponse};
+use crate::rpc::{BUF_SIZE, CallId, ClientId, RpcRequest, RpcResponse};
 use crate::worker::{SharedObject, WorkerBuilder};
 
 /// Type alias for the message channel used by each client actor.
@@ -49,6 +49,16 @@ type SharedSubscriptions = Arc<Mutex<HashMap<String, HashMap<String, HashSet<Cli
 
 /// Shared in-flight call map (call ID → original caller client).
 type SharedCalls = Arc<Mutex<HashMap<CallId, ClientId>>>;
+
+// LOCK ORDER (important): when acquiring multiple mutexes, follow this
+// global ordering to avoid lock-order inversion and potential deadlocks:
+//   1. `clients`
+//   2. `objects`
+//   3. `subscriptions`
+//   4. `calls`
+//   5. `services` (if present)
+// Acquire locks in that order and avoid holding a lock across an `.await`
+// whenever possible. Keep critical sections as small as possible.
 
 /// Message sent to a client actor.
 ///
@@ -74,6 +84,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send> Stream for T {}
 pub async fn read_packet<R: AsyncRead + Unpin>(reader: &mut R) -> std::io::Result<Vec<u8>> {
     let len = reader.read_u32().await?;
     log::trace!("Reading packet of length: {len}");
+    if (len as usize) > BUF_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("packet size {} exceeds max allowed {}", len, BUF_SIZE),
+        ));
+    }
+
     let mut buf = vec![0u8; len as usize];
     reader.read_exact(&mut buf).await?;
     Ok(buf)
@@ -83,6 +100,17 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(
     writer: &mut W,
     data: &[u8],
 ) -> std::io::Result<()> {
+    if data.len() > BUF_SIZE {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "attempt to write packet of size {} which exceeds max {}",
+                data.len(),
+                BUF_SIZE
+            ),
+        ));
+    }
+
     let len = data.len() as u32;
     // write length prefix first
     writer.write_u32(len).await?;
