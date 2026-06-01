@@ -37,7 +37,7 @@ enum ClientMsg {
     Subscribe {
         object_name: String,
         topic: String,
-        updates: mpsc::UnboundedSender<serde_json::Value>,
+        updates: mpsc::Sender<serde_json::Value>,
     },
 }
 
@@ -117,7 +117,7 @@ impl IPCClient {
             let mut stream = stream;
             let mut subs: std::collections::HashMap<
                 (String, String),
-                Vec<mpsc::UnboundedSender<serde_json::Value>>,
+                Vec<mpsc::Sender<serde_json::Value>>,
             > = std::collections::HashMap::new();
 
             loop {
@@ -204,10 +204,28 @@ impl IPCClient {
                             Ok(resp) => {
                                 // Handle Publish notifications
                                 if let RpcResponse::Event { object_name, topic, args } = resp {
-                                    if let Some(subscribers) = subs.get(&(object_name.clone(), topic.clone())) {
-                                        for tx in subscribers {
-                                            let _ = tx.send(args.clone());
-                                        }
+                                    if let Some(subscribers) = subs.get_mut(&(object_name.clone(), topic.clone())) {
+                                        // Iterate and prune closed or slow subscribers
+                                        subscribers.retain(|tx| {
+                                            match tx.try_send(args.clone()) {
+                                                Ok(()) => true,
+                                                Err(e) => {
+                                                    use tokio::sync::mpsc::error::TrySendError;
+                                                    match e {
+                                                        TrySendError::Closed(_) => {
+                                                            // Subscriber dropped, remove
+                                                            log::debug!("Pruning closed subscriber for {object_name}/{topic}");
+                                                            false
+                                                        }
+                                                        TrySendError::Full(_) => {
+                                                            // Subscriber is slow; drop to avoid unbounded buffering
+                                                            log::warn!("Dropping slow subscriber for {object_name}/{topic}");
+                                                            false
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
                                     }
                                 } else{
                                     log::trace!("Other responses are ignored here; handled elsewhere");
@@ -320,12 +338,9 @@ impl IPCClient {
     ///
     /// Returns an [`mpsc::UnboundedReceiver`] where updates
     /// will be delivered as `serde_json::Value`.
-    pub async fn subscribe(
-        &self,
-        object: &str,
-        topic: &str,
-    ) -> mpsc::UnboundedReceiver<serde_json::Value> {
-        let (tx_updates, rx_updates) = mpsc::unbounded_channel();
+    pub async fn subscribe(&self, object: &str, topic: &str) -> mpsc::Receiver<serde_json::Value> {
+        // Use a bounded channel to provide backpressure and avoid unbounded memory growth
+        let (tx_updates, rx_updates) = mpsc::channel(16);
         let _ = self.tx.send(ClientMsg::Subscribe {
             object_name: object.into(),
             topic: topic.into(),
@@ -342,7 +357,7 @@ impl IPCClient {
     where
         F: Fn(Value) + Send + Sync + 'static,
     {
-        let (tx, mut rx) = mpsc::unbounded_channel::<Value>();
+        let (tx, mut rx) = mpsc::channel::<Value>(16);
         let callback = Arc::new(callback);
 
         // Tell the actor to subscribe
