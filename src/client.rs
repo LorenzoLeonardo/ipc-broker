@@ -178,7 +178,17 @@ impl IPCClient {
                                 subs.entry((object_name.clone(), topic.clone()))
                                     .or_default()
                                     .push(updates);
-                                let data = serde_json::to_vec(&RpcRequest::Subscribe { object_name, topic }).unwrap();
+
+                                let data = match serde_json::to_vec(&RpcRequest::Subscribe {
+                                    object_name: object_name.clone(),
+                                    topic: topic.clone(),
+                                }) {
+                                    Ok(d) => d,
+                                    Err(e) => {
+                                        log::error!("Failed to serialize Subscribe request: {e}");
+                                        continue;
+                                    }
+                                };
 
                                 let _ = write_packet(&mut stream, &data).await;
                             }
