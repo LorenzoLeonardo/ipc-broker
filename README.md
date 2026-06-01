@@ -52,6 +52,18 @@ and both **TCP** and **Named Pipes** for Windows.
 
 ---
 
+## Design Summary
+
+This project implements a small, efficient IPC broker with the following design goals:
+
+- Decoupled actors: each client connection is handled by a per-connection actor that splits read and write work into separate tasks to avoid head-of-line blocking.
+- Explicit routing: the broker maintains small shared maps (clients, objects, subscriptions, in-flight calls) to route `Call` and `Result` messages deterministically.
+- Backpressure-aware: per-client outbound channels are bounded so slow receivers apply backpressure to publishers instead of growing unbounded memory.
+- Service activation: on Unix, known service objects can be auto-started when the first call arrives; pending calls are queued until the worker registers.
+
+See the detailed architecture and algorithms in [Architecture.MD](Architecture.MD) and high-level block diagrams in [BlockDiagram.md](BlockDiagram.md).
+
+
 ## 🚀 Getting Started (Development)
 
 ### 1. Run the Broker
