@@ -733,7 +733,7 @@ async fn start_tcp_listener(
                         Ok((stream, _)) => match stream.peer_addr() {
                             Ok(peer) => {
                                 log::info!("A Client connected via TCP: {}:{}", peer.ip(), peer.port());
-                                spawn_client(
+                                tokio::spawn(spawn_client(
                                     stream,
                                     objects.clone(),
                                     clients.clone(),
@@ -741,7 +741,7 @@ async fn start_tcp_listener(
                                     calls.clone(),
                                     #[cfg(unix)]
                                     services.clone()
-                                );
+                                ));
                             }
                             Err(e) => {
                                 log::error!("TCP peer error: {e}")
@@ -788,14 +788,14 @@ async fn start_unix_listener(
                         Ok((stream, _)) => match stream.peer_addr() {
                             Ok(_) => {
                                 log::info!("A Client connected via Unix: {UNIX_PATH}");
-                                spawn_client(
+                                tokio::spawn(spawn_client(
                                     stream,
                                     objects.clone(),
                                     clients.clone(),
                                     subscriptions.clone(),
                                     calls.clone(),
                                     services.clone(),
-                                );
+                                ));
                             }
                             Err(e) => {
                                 log::error!("Unix peer error: {e}")
@@ -908,7 +908,7 @@ async fn start_named_pipe_listener(
                                 match server.connect().await {
                                     Ok(()) => {
                                         log::info!("Client connected via NamedPipe: {PIPE_PATH}");
-                                        spawn_client(server, objects, clients, subs, calls);
+                                        tokio::spawn(spawn_client(server, objects, clients, subs, calls));
                                     }
                                     Err(e) => {
                                         log::error!("NamedPipe connection failed: {e}");
@@ -932,7 +932,7 @@ async fn start_named_pipe_listener(
 /// Spawns a new client actor from a given stream.
 ///
 /// Each client is assigned a unique [`ClientId`].
-fn spawn_client<S>(
+async fn spawn_client<S>(
     stream: S,
     objects: SharedObjects,
     clients: SharedClients,
@@ -946,13 +946,14 @@ fn spawn_client<S>(
     log::info!("CONNECTION STARTED: {client_id:?}");
 
     let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
-    let inner_client_id = client_id.clone();
-    tokio::spawn({
-        let clients = clients.clone();
-        async move {
-            clients.lock().await.insert(inner_client_id, tx);
-        }
-    });
+
+    // Insert the sender into the clients registry synchronously to avoid
+    // a race where other tasks attempt to send to this client before it's
+    // registered.
+    {
+        let mut clients_guard = clients.lock().await;
+        clients_guard.insert(client_id.clone(), tx);
+    }
 
     let actor = ClientActor {
         client_id,
