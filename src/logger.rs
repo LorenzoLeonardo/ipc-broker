@@ -34,31 +34,15 @@ pub fn setup_logger() {
             let file = record.file().unwrap_or("unknown_file");
             let line = record.line().map_or(0, |l| l);
 
-            match level_filter {
-                LevelFilter::Off
-                | LevelFilter::Error
-                | LevelFilter::Warn
-                | LevelFilter::Debug
-                | LevelFilter::Trace => {
-                    out.finish(format_args!(
-                        "[{}][{}]: {} <{}:{}>",
-                        Local::now().format("%b-%d-%Y %H:%M:%S.%f"),
-                        record.level(),
-                        message,
-                        file,
-                        line,
-                    ));
-                }
-                LevelFilter::Info => {
-                    out.finish(format_args!(
-                        "[{}]: {} <{}:{}>",
-                        record.level(),
-                        message,
-                        file,
-                        line,
-                    ));
-                }
-            }
+            // Consistent log format for all levels: timestamp + level + message + file:line
+            out.finish(format_args!(
+                "[{}][{}]: {} <{}:{}>",
+                Local::now().format("%b-%d-%Y %H:%M:%S.%f"),
+                record.level(),
+                message,
+                file,
+                line,
+            ));
         })
         .level(level_filter)
         .chain(io::stdout())
