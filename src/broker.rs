@@ -602,8 +602,11 @@ impl ServerState {
             } // 🔓 lock released here
 
             // 3️⃣ Start service OUTSIDE the lock
-            if start_service && let Some(name) = service_name {
-                activate::spawn_service(&name);
+            if start_service {
+                if let Some(name) = service_name {
+                    // spawn asynchronously so we don't block the broker task
+                    tokio::spawn(activate::spawn_service(name));
+                }
             }
         }
         #[cfg(windows)]
