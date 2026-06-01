@@ -1,4 +1,5 @@
 use std::io;
+use std::sync::Once;
 
 use chrono::Local;
 use fern::Dispatch;
@@ -27,28 +28,35 @@ fn logging_level() -> LevelFilter {
 }
 
 pub fn setup_logger() {
+    static INIT: Once = Once::new();
+
     let level_filter = logging_level();
 
-    if let Err(e) = Dispatch::new()
-        .format(move |out, message, record| {
-            let file = record.file().unwrap_or("unknown_file");
-            let line = record.line().map_or(0, |l| l);
+    INIT.call_once(move || {
+        // Attempt to install the global logger once. If installation fails
+        // (for example because another logger is already installed), emit a
+        // diagnostic to stderr but do not panic or attempt re-installation.
+        if let Err(e) = Dispatch::new()
+            .format(move |out, message, record| {
+                let file = record.file().unwrap_or("unknown_file");
+                let line = record.line().map_or(0, |l| l);
 
-            // Consistent log format for all levels: timestamp + level + message + file:line
-            out.finish(format_args!(
-                "[{}][{}]: {} <{}:{}>",
-                Local::now().format("%b-%d-%Y %H:%M:%S.%f"),
-                record.level(),
-                message,
-                file,
-                line,
-            ));
-        })
-        .level(level_filter)
-        .chain(io::stdout())
-        .apply()
-    {
-        log::error!("Logger initialization failed: {e}");
-    }
+                out.finish(format_args!(
+                    "[{}][{}]: {} <{}:{}>",
+                    Local::now().format("%b-%d-%Y %H:%M:%S.%f"),
+                    record.level(),
+                    message,
+                    file,
+                    line,
+                ));
+            })
+            .level(level_filter)
+            .chain(io::stdout())
+            .apply()
+        {
+            eprintln!("Logger initialization failed: {e}");
+        }
+    });
+
     log::debug!("Enabled log {level_filter}.");
 }
