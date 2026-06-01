@@ -34,7 +34,8 @@ use crate::rpc::{CallId, ClientId, RpcRequest, RpcResponse};
 use crate::worker::{SharedObject, WorkerBuilder};
 
 /// Type alias for the message channel used by each client actor.
-type ClientSender = mpsc::UnboundedSender<ClientMsg>;
+/// Use a bounded channel to provide backpressure and avoid unbounded memory growth.
+type ClientSender = mpsc::Sender<ClientMsg>;
 
 /// Shared registry of active clients.
 type SharedClients = Arc<Mutex<HashMap<ClientId, ClientSender>>>;
@@ -106,7 +107,7 @@ pub async fn write_packet<W: AsyncWrite + Unpin>(
 struct ClientActor<S> {
     client_id: ClientId,
     stream: S,
-    rx: mpsc::UnboundedReceiver<ClientMsg>,
+    rx: mpsc::Receiver<ClientMsg>,
 
     objects: SharedObjects,
     clients: SharedClients,
@@ -318,7 +319,7 @@ where
     async fn writer_loop<W>(
         writer: &mut W,
         client_id: ClientId,
-        rx: &mut mpsc::UnboundedReceiver<ClientMsg>,
+        rx: &mut mpsc::Receiver<ClientMsg>,
         mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
     ) where
         W: AsyncWrite + Unpin,
@@ -666,10 +667,20 @@ impl ServerState {
                 }
             };
 
-            let clients_guard = self.clients.lock().await;
-            for sub_id in subs_list {
-                if let Some(tx) = clients_guard.get(&sub_id) {
-                    let _ = tx.send(ClientMsg::Outgoing(bytes.clone()));
+            // Clone senders while holding the lock, then release it before awaiting sends
+            let mut senders = Vec::new();
+            {
+                let clients_guard = self.clients.lock().await;
+                for sub_id in subs_list {
+                    if let Some(tx) = clients_guard.get(&sub_id) {
+                        senders.push(tx.clone());
+                    }
+                }
+            }
+
+            for tx in senders {
+                if let Err(e) = tx.send(ClientMsg::Outgoing(bytes.clone())).await {
+                    log::warn!("Failed to send event to client: {e}");
                 }
             }
         }
@@ -688,9 +699,16 @@ impl ServerState {
                 return; // skip this send but keep the broker running
             }
         };
-        let clients_guard = clients.lock().await;
-        if let Some(tx) = clients_guard.get(client_id) {
-            let _ = tx.send(ClientMsg::Outgoing(bytes));
+        // Obtain a cloned sender while holding the lock, then send without the lock
+        let tx_opt = {
+            let clients_guard = clients.lock().await;
+            clients_guard.get(client_id).cloned()
+        };
+
+        if let Some(tx) = tx_opt {
+            if let Err(e) = tx.send(ClientMsg::Outgoing(bytes)).await {
+                log::warn!("Failed to send message to client {client_id:?}: {e}");
+            }
         }
     }
 }
@@ -948,7 +966,7 @@ async fn spawn_client<S>(
     let client_id = ClientId::from(Uuid::new_v4());
     log::info!("CONNECTION STARTED: {client_id:?}");
 
-    let (tx, rx) = mpsc::unbounded_channel::<ClientMsg>();
+    let (tx, rx) = mpsc::channel::<ClientMsg>(64);
 
     // Insert the sender into the clients registry synchronously to avoid
     // a race where other tasks attempt to send to this client before it's
