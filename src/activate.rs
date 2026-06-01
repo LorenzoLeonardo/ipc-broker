@@ -36,12 +36,19 @@ pub struct ServiceEntry {
 pub type SharedServices = Arc<Mutex<HashMap<String, ServiceEntry>>>;
 pub const BASE_DIR: &str = "service-activation";
 
-fn home_dir() -> PathBuf {
-    dirs::home_dir().expect("Could not determine home directory")
+fn home_dir() -> Option<PathBuf> {
+    dirs::home_dir()
 }
 
 pub async fn load_service_activations(services: &SharedServices) {
-    let base_dir = home_dir().join(BASE_DIR);
+    let base_dir = match home_dir() {
+        Some(h) => h.join(BASE_DIR),
+        None => {
+            log::warn!("Could not determine home directory for service activations");
+            return;
+        }
+    };
+
     let entries = match fs::read_dir(&base_dir) {
         Ok(e) => e,
         Err(e) => {

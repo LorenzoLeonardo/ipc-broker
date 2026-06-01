@@ -245,7 +245,13 @@ async fn run_worker(
         let reg = RpcRequest::RegisterObject {
             object_name: name.clone(),
         };
-        let data = serde_json::to_vec(&reg).unwrap();
+        let data = match serde_json::to_vec(&reg) {
+            Ok(d) => d,
+            Err(e) => {
+                log::error!("Failed to serialize RegisterObject for {}: {e}", name);
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+            }
+        };
         write_packet(&mut stream, &data).await?;
     }
 
@@ -291,13 +297,20 @@ async fn run_worker(
                             if let Some(obj) = objects.get(&object_name) {
                                 let result = obj.call(&method, &args).await;
 
+                                let cid = call_id.clone();
                                 let resp = RpcResponse::Result {
                                     call_id,
                                     object_name,
                                     value: result,
                                 };
 
-                                let resp_bytes = serde_json::to_vec(&resp).unwrap();
+                                let resp_bytes = match serde_json::to_vec(&resp) {
+                                    Ok(b) => b,
+                                    Err(e) => {
+                                        log::error!("Failed to serialize response for call {:?}: {e}", cid);
+                                        continue;
+                                    }
+                                };
 
                                 if let Err(err) = write_packet(&mut stream, &resp_bytes).await {
                                     log::error!("Write error (closing connection): {err}");
