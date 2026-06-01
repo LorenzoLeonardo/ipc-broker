@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::{fs, process};
+use tokio::task::spawn_blocking;
 
 use serde::Deserialize;
 use tokio::sync::Mutex;
@@ -100,22 +101,30 @@ pub async fn load_service_activations(services: &SharedServices) {
     }
 }
 
-pub fn spawn_service(unit: &str) {
-    let status = process::Command::new("/usr/bin/sudo")
-        .arg("/usr/bin/systemctl")
-        .arg("restart")
-        .arg(unit)
-        .status();
+pub async fn spawn_service(unit: String) {
+    // Run systemctl restart via sudo in a blocking thread to avoid blocking
+    // the Tokio runtime.
+    let join_res = spawn_blocking(move || {
+        std::process::Command::new("/usr/bin/sudo")
+            .arg("/usr/bin/systemctl")
+            .arg("restart")
+            .arg(unit)
+            .status()
+    })
+    .await;
 
-    match status {
-        Ok(s) if s.success() => {
-            log::info!("Restarted systemd service via sudo: {}", unit);
+    match join_res {
+        Ok(Ok(s)) if s.success() => {
+            log::info!("Restarted systemd service via sudo");
         }
-        Ok(s) => {
-            log::error!("sudo systemctl restart {} failed: {}", unit, s);
+        Ok(Ok(s)) => {
+            log::error!("sudo systemctl restart failed: {}", s);
+        }
+        Ok(Err(e)) => {
+            log::error!("Failed to execute sudo systemctl: {}", e);
         }
         Err(e) => {
-            log::error!("Failed to execute sudo systemctl: {}", e);
+            log::error!("spawn_blocking task failed: {}", e);
         }
     }
 }
