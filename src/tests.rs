@@ -586,3 +586,139 @@ async fn publish_subscribe() {
     assert_eq!(n1["headline"], "Rust broker eventing works!");
     assert_eq!(n2["headline"], "Another news!");
 }
+
+// --- Additional edge-case and fuzz tests ---
+
+#[tokio::test]
+async fn oversized_payload_echo() {
+    ensure_broker_running();
+
+    // Echo object that returns the args so we can verify large payload roundtrip
+    struct Echo;
+    #[async_trait]
+    impl SharedObject for Echo {
+        async fn call(&self, _method: &str, args: &Value) -> Value {
+            args.clone()
+        }
+    }
+
+    tokio::spawn(async move {
+        if let Err(e) = WorkerBuilder::new().add("Echo", Echo).spawn().await {
+            log::error!("worker exited early: {e:?}");
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let proxy = IPCClient::connect().await.unwrap();
+    proxy.wait_for_object("Echo").await.unwrap();
+
+    // create a ~16KB string payload (safer for CI environments)
+    let big = "x".repeat(16 * 1024);
+    let arg = json!([big.clone()]);
+
+    let got = proxy
+        .remote_call::<Value, Value>("Echo", "any", arg.clone())
+        .await
+        .unwrap();
+
+    assert_eq!(got, arg);
+}
+
+#[tokio::test]
+async fn random_fuzz_echo_roundtrips() {
+    ensure_broker_running();
+
+    // re-use Echo object
+    struct Echo2;
+    #[async_trait]
+    impl SharedObject for Echo2 {
+        async fn call(&self, _method: &str, args: &Value) -> Value {
+            args.clone()
+        }
+    }
+
+    tokio::spawn(async move {
+        if let Err(e) = WorkerBuilder::new().add("Echo2", Echo2).spawn().await {
+            log::error!("worker exited early: {e:?}");
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let proxy = IPCClient::connect().await.unwrap();
+    proxy.wait_for_object("Echo2").await.unwrap();
+
+    // Seed RNG and perform many small randomized round-trips including edge cases
+    let mut rng = SimpleRng::new(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64,
+    );
+
+    for _ in 0..120 {
+        let choice = rng.next_u32() % 7;
+        let val = match choice {
+            0 => json!(null),
+            1 => json!(true),
+            2 => json!(""),
+            3 => json!(rng.next_u32()),
+            4 => json!(rng.gen_range(0, 1000)),
+            5 => json!([rng.next_u32(), rng.next_u32(), rng.next_u32()]),
+            _ => json!({"k": rng.next_u32(), "s": format!("fuzz-{}", rng.next_u32())}),
+        };
+
+        let sent = json!([val.clone()]);
+        let got = timeout(
+            Duration::from_secs(2),
+            proxy.remote_call::<Value, Value>("Echo2", "any", sent.clone()),
+        )
+        .await
+        .expect("timeout")
+        .unwrap();
+
+        assert_eq!(got, sent);
+    }
+}
+
+#[tokio::test]
+async fn oversized_remote_call_error() {
+    ensure_broker_running();
+
+    // Spawn a dedicated Echo object for this test
+    struct EchoHuge;
+    #[async_trait]
+    impl SharedObject for EchoHuge {
+        async fn call(&self, _method: &str, args: &Value) -> Value {
+            args.clone()
+        }
+    }
+
+    tokio::spawn(async move {
+        if let Err(e) = WorkerBuilder::new().add("EchoHuge", EchoHuge).spawn().await {
+            log::error!("worker exited early: {e:?}");
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let proxy = IPCClient::connect().await.unwrap();
+    proxy.wait_for_object("EchoHuge").await.unwrap();
+
+    // create payload larger than the allowed BUF_SIZE to trigger write_packet error
+    let big = "x".repeat(crate::rpc::BUF_SIZE + 10);
+    let arg = json!([big]);
+
+    let res = proxy
+        .remote_call::<Value, Value>("EchoHuge", "any", arg)
+        .await;
+
+    assert!(res.is_err(), "expected error for oversized payload");
+    let e = res.unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        e.to_string().contains("exceeds"),
+        "error message should mention 'exceeds'"
+    );
+}
