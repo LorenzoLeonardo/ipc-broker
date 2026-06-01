@@ -603,11 +603,9 @@ impl ServerState {
             } // 🔓 lock released here
 
             // 3️⃣ Start service OUTSIDE the lock
-            if start_service {
-                if let Some(name) = service_name {
-                    // spawn asynchronously so we don't block the broker task
-                    tokio::spawn(activate::spawn_service(name));
-                }
+            if start_service && let Some(name) = service_name {
+                // spawn asynchronously so we don't block the broker task
+                tokio::spawn(activate::spawn_service(name));
             }
         }
         #[cfg(windows)]
@@ -705,10 +703,10 @@ impl ServerState {
             clients_guard.get(client_id).cloned()
         };
 
-        if let Some(tx) = tx_opt {
-            if let Err(e) = tx.send(ClientMsg::Outgoing(bytes)).await {
-                log::warn!("Failed to send message to client {client_id:?}: {e}");
-            }
+        if let Some(tx) = tx_opt
+            && let Err(e) = tx.send(ClientMsg::Outgoing(bytes)).await
+        {
+            log::warn!("Failed to send message to client {client_id:?}: {e}");
         }
     }
 }
