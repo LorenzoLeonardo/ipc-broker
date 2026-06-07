@@ -48,7 +48,8 @@ type SharedObjects = Arc<Mutex<HashMap<String, ClientId>>>;
 type SharedSubscriptions = Arc<Mutex<HashMap<String, HashMap<String, HashSet<ClientId>>>>>;
 
 /// Shared in-flight call map (call ID → original caller client).
-type SharedCalls = Arc<Mutex<HashMap<CallId, ClientId>>>;
+/// Map of in-flight calls: CallId -> (caller ClientId, caller Sender)
+type SharedCalls = Arc<Mutex<HashMap<CallId, (ClientId, ClientSender)>>>;
 
 // LOCK ORDER (important): when acquiring multiple mutexes, follow this
 // global ordering to avoid lock-order inversion and potential deadlocks:
@@ -243,7 +244,10 @@ where
         }
 
         // 4️⃣ Remove calls where this client was the caller
-        calls.lock().await.retain(|_, caller| caller != client_id);
+        calls
+            .lock()
+            .await
+            .retain(|_, (caller_id, _)| caller_id != client_id);
 
         // 5️⃣ Cleanup services
         #[cfg(unix)]
@@ -456,10 +460,26 @@ impl ServerState {
                 call_id: Some(call_id),
                 ..
             } => {
-                // Look up original caller
-                if let Some(caller) = self.calls.lock().await.remove(call_id) {
-                    log::debug!("Forwarding response for call_id {call_id:?} to caller {caller:?}");
-                    Self::send_to_client(&self.clients, &caller, &resp).await;
+                // Look up original caller (id + sender) and forward without re-locking `clients`
+                let maybe = {
+                    let mut calls_guard = self.calls.lock().await;
+                    calls_guard.remove(call_id)
+                };
+
+                if let Some((_caller_id, caller_tx)) = maybe {
+                    log::debug!("Forwarding response for call_id {call_id:?}");
+
+                    let bytes = match serde_json::to_vec(&resp) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            log::error!("[Broker] Failed to serialize response for caller: {e}");
+                            return;
+                        }
+                    };
+
+                    if let Err(e) = caller_tx.send(ClientMsg::Outgoing(bytes)).await {
+                        log::warn!("Failed to send response to caller: {e}");
+                    }
                 } else {
                     log::error!("No caller found for call_id {call_id:?}");
                 }
@@ -557,26 +577,73 @@ impl ServerState {
         args: serde_json::Value,
         client_id: &ClientId,
     ) {
-        // Track caller for response routing
-        self.calls
-            .lock()
-            .await
-            .insert(call_id.clone(), client_id.clone());
+        // To avoid lock-order inversion we follow the global order when
+        // acquiring multiple locks. Snapshot necessary senders/ids while
+        // holding `clients` then `objects`, then insert into `calls`.
 
-        // 1️⃣ Is service already running?
-        if let Some(worker_id) = self.objects.lock().await.get(&object_name).cloned() {
-            Self::send_to_client(
-                &self.clients,
-                &worker_id,
-                &RpcRequest::Call {
+        // 1) Acquire `clients` then `objects` to lookup the worker sender
+        let (worker_id_opt, worker_tx_opt, caller_tx_opt) = {
+            let clients_guard = self.clients.lock().await;
+            let objects_guard = self.objects.lock().await;
+
+            let worker_id = objects_guard.get(&object_name).cloned();
+            let worker_tx = worker_id
+                .as_ref()
+                .and_then(|id| clients_guard.get(id).cloned());
+            let caller_tx = clients_guard.get(client_id).cloned();
+            (worker_id, worker_tx, caller_tx)
+        };
+
+        // Ensure caller is still connected
+        let caller_tx = match caller_tx_opt {
+            Some(tx) => tx,
+            None => {
+                let message = format!("Caller disconnected");
+                Self::send_to_client(
+                    &self.clients,
+                    client_id,
+                    &RpcResponse::Error {
+                        call_id: Some(call_id.clone()),
+                        object_name: object_name.clone(),
+                        message,
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+
+        // 2) Insert mapping into `calls` -> (caller id, caller sender)
+        {
+            let mut calls_guard = self.calls.lock().await;
+            calls_guard.insert(call_id.clone(), (client_id.clone(), caller_tx.clone()));
+        }
+
+        // 3) If worker exists, forward the call; otherwise handle service activation
+        if let Some(_worker_id) = worker_id_opt {
+            if let Some(worker_tx) = worker_tx_opt {
+                let req = RpcRequest::Call {
                     call_id,
                     object_name,
                     method,
                     args,
-                },
-            )
-            .await;
-            return;
+                };
+
+                let bytes = match serde_json::to_vec(&req) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        log::error!("[Broker] Failed to serialize call for forwarding: {e}");
+                        return;
+                    }
+                };
+
+                if let Err(e) = worker_tx.send(ClientMsg::Outgoing(bytes)).await {
+                    log::warn!("Failed to forward call to worker: {e}");
+                }
+                return;
+            } else {
+                // Worker id existed but no sender found; fall through to error
+            }
         }
         #[cfg(unix)]
         {
@@ -1099,4 +1166,124 @@ pub async fn run_broker() -> std::io::Result<()> {
 
     log::info!("ipc-broker shutting down...");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::HashMap;
+    use tokio::sync::mpsc;
+    use tokio::time::{Duration, timeout};
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn concurrent_lock_order_paths() {
+        // Setup shared state
+        let objects: SharedObjects = Arc::new(Mutex::new(HashMap::new()));
+        let clients: SharedClients = Arc::new(Mutex::new(HashMap::new()));
+        let subscriptions: SharedSubscriptions = Arc::new(Mutex::new(HashMap::new()));
+        let calls: SharedCalls = Arc::new(Mutex::new(HashMap::new()));
+
+        #[cfg(unix)]
+        let services: SharedServices = Arc::new(Mutex::new(HashMap::new()));
+
+        let server = ServerState {
+            objects: objects.clone(),
+            clients: clients.clone(),
+            subscriptions: subscriptions.clone(),
+            calls: calls.clone(),
+            #[cfg(unix)]
+            services: services.clone(),
+        };
+
+        // Create a worker client and a caller client
+        let worker_id = ClientId::from(Uuid::new_v4());
+        let caller_id = ClientId::from(Uuid::new_v4());
+
+        let (worker_tx, mut worker_rx) = mpsc::channel::<ClientMsg>(8);
+        let (caller_tx, mut caller_rx) = mpsc::channel::<ClientMsg>(8);
+
+        // Register senders in clients map
+        {
+            let mut guard = clients.lock().await;
+            guard.insert(worker_id.clone(), worker_tx.clone());
+            guard.insert(caller_id.clone(), caller_tx.clone());
+        }
+
+        // Register object owned by worker
+        {
+            let mut objs = objects.lock().await;
+            objs.insert("obj".to_string(), worker_id.clone());
+        }
+
+        // Worker task: receive forwarded calls and immediately send back a response
+        let server_clone = server.clone();
+        let worker_clone = worker_id.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = worker_rx.recv().await {
+                if let ClientMsg::Outgoing(bytes) = msg {
+                    // parse the call and reply
+                    if let Ok(req) = serde_json::from_slice::<RpcRequest>(&bytes) {
+                        if let RpcRequest::Call {
+                            call_id,
+                            object_name,
+                            ..
+                        } = req
+                        {
+                            let resp = RpcResponse::Result {
+                                call_id: call_id.clone(),
+                                object_name: object_name.clone(),
+                                value: json!("ok"),
+                            };
+                            // send response back into broker
+                            server_clone.handle_response(resp, &worker_clone).await;
+                        }
+                    }
+                }
+            }
+        });
+
+        // Spawn many concurrent callers
+        let calls_n = 50usize;
+        for _ in 0..calls_n {
+            let server2 = server.clone();
+            let caller2 = caller_id.clone();
+            tokio::spawn(async move {
+                let call_id = CallId::from(Uuid::new_v4());
+                server2
+                    .handle_call(
+                        call_id,
+                        "obj".to_string(),
+                        "echo".to_string(),
+                        json!({}),
+                        &caller2,
+                    )
+                    .await;
+            });
+        }
+
+        // Collect responses
+        let mut got = 0usize;
+        let res = timeout(Duration::from_secs(5), async {
+            while let Some(msg) = caller_rx.recv().await {
+                if let ClientMsg::Outgoing(bytes) = msg {
+                    if let Ok(resp) = serde_json::from_slice::<RpcResponse>(&bytes) {
+                        if let RpcResponse::Result { value, .. } = resp {
+                            if value == json!("ok") {
+                                got += 1;
+                                if got >= calls_n {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        })
+        .await;
+
+        assert!(res.is_ok(), "timed out waiting for responses");
+        assert_eq!(got, calls_n, "expected all calls to get responses");
+    }
 }
