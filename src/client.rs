@@ -49,7 +49,7 @@ enum ClientMsg {
 /// that manages the network connection.
 #[derive(Clone)]
 pub struct IPCClient {
-    tx: mpsc::UnboundedSender<ClientMsg>,
+    tx: mpsc::Sender<ClientMsg>,
 }
 
 impl IPCClient {
@@ -109,8 +109,8 @@ impl IPCClient {
                 }
             };
 
-        // channel for handles -> actor
-        let (tx, mut rx) = mpsc::unbounded_channel::<ClientMsg>();
+        // channel for handles -> actor (bounded to provide backpressure)
+        let (tx, mut rx) = mpsc::channel::<ClientMsg>(64);
 
         // Spawn the client actor task
         tokio::spawn(async move {
@@ -282,6 +282,7 @@ impl IPCClient {
         // Send request to actor
         self.tx
             .send(msg)
+            .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))?;
 
         // Wait for reply
@@ -331,6 +332,7 @@ impl IPCClient {
 
         self.tx
             .send(msg)
+            .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))
     }
 
@@ -341,11 +343,14 @@ impl IPCClient {
     pub async fn subscribe(&self, object: &str, topic: &str) -> mpsc::Receiver<serde_json::Value> {
         // Use a bounded channel to provide backpressure and avoid unbounded memory growth
         let (tx_updates, rx_updates) = mpsc::channel(16);
-        let _ = self.tx.send(ClientMsg::Subscribe {
-            object_name: object.into(),
-            topic: topic.into(),
-            updates: tx_updates,
-        });
+        let _ = self
+            .tx
+            .send(ClientMsg::Subscribe {
+                object_name: object.into(),
+                topic: topic.into(),
+                updates: tx_updates,
+            })
+            .await;
         rx_updates
     }
 
@@ -361,11 +366,14 @@ impl IPCClient {
         let callback = Arc::new(callback);
 
         // Tell the actor to subscribe
-        let _ = self.tx.send(ClientMsg::Subscribe {
-            object_name: object.into(),
-            topic: topic.into(),
-            updates: tx,
-        });
+        let _ = self
+            .tx
+            .send(ClientMsg::Subscribe {
+                object_name: object.into(),
+                topic: topic.into(),
+                updates: tx,
+            })
+            .await;
 
         // Spawn a task to handle messages and call the callback synchronously
         tokio::spawn(async move {
@@ -403,6 +411,7 @@ impl IPCClient {
         // Send request to actor
         self.tx
             .send(msg)
+            .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))?;
 
         // Wait for reply
