@@ -957,112 +957,52 @@ async fn start_named_pipe_listener(
     subscriptions: SharedSubscriptions,
     calls: SharedCalls,
 ) -> std::io::Result<JoinHandle<()>> {
-    use std::{ffi::c_void, ptr::null_mut, time::Duration};
-
-    use tokio::{net::windows::named_pipe::ServerOptions, signal};
-    use windows::{
-        Win32::Foundation::{HLOCAL, LocalFree},
-        Win32::Security::{
-            Authorization::{
-                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
-            },
-            PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES,
-        },
-        core::BOOL,
-    };
+    use std::time::Duration;
 
     use crate::rpc::PIPE_PATH;
+    use tokio::{net::windows::named_pipe::ServerOptions, signal};
 
     log::info!("Broker listening on NamedPipe {}", PIPE_PATH);
-    let handle = unsafe {
-        let sddl = windows::core::w!("D:(A;;GA;;;WD)");
-        let mut p_sd: PSECURITY_DESCRIPTOR = PSECURITY_DESCRIPTOR(null_mut());
 
-        let success = ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl,
-            SDDL_REVISION_1,
-            &mut p_sd,
-            Some(null_mut()),
-        );
-
-        if let Err(e) = success {
-            log::error!("Failed to create security descriptor: {e}");
-            return Err(std::io::Error::other(e.to_string()));
-        }
-
-        let sa_box = Box::new(SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: p_sd.0,
-            bInheritHandle: BOOL(0),
-        });
-
-        let sa_raw_ptr = Box::into_raw(sa_box) as *mut c_void;
-
-        struct SecurityAttributesHolder {
-            ptr: *mut c_void,
-        }
-        unsafe impl Send for SecurityAttributesHolder {}
-        unsafe impl Sync for SecurityAttributesHolder {}
-
-        // Since we are not freeing the SECURITY_DESCRIPTOR itself, we need to ensure
-        // we free the SECURITY_ATTRIBUTES when done.
-        impl Drop for SecurityAttributesHolder {
-            fn drop(&mut self) {
-                unsafe {
-                    if self.ptr.is_null() {
-                        return;
-                    }
-                    let handle = HLOCAL(self.ptr);
-                    let res = LocalFree(Some(handle));
-
-                    if !res.0.is_null() {
-                        log::warn!("LocalFree failed when freeing SECURITY_DESCRIPTOR");
-                    }
-                    log::info!("SecurityAttributesHolder dropped and memory freed.");
+    let handle = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = signal::ctrl_c() => {
+                    log::info!("Shutdown signal received, stopping NamedPipe listener.");
+                    break;
                 }
-            }
-        }
+                _ = async {
+                    // Create pipe with default security attributes. If custom SDDL
+                    // is required, consider a platform-specific helper, but avoid
+                    // unsafe raw pointer manipulation.
+                    match ServerOptions::new().create(PIPE_PATH) {
+                        Ok(server) => {
+                            let objects = objects.clone();
+                            let clients = clients.clone();
+                            let subs = subscriptions.clone();
+                            let calls = calls.clone();
 
-        let holder = Arc::new(SecurityAttributesHolder { ptr: sa_raw_ptr });
-        let holder_clone = holder.clone();
-        tokio::spawn(async move {
-            loop {
-                tokio::select! {
-                    _ = signal::ctrl_c() => {
-                        log::info!("Shutdown signal received, stopping NamedPipe listener.");
-                        break;
-                    }
-                    _ = async {
-                        match ServerOptions::new()
-                            .create_with_security_attributes_raw(PIPE_PATH, holder_clone.ptr)
-                        {
-                            Ok(server) => {
-                                let objects = objects.clone();
-                                let clients = clients.clone();
-                                let subs = subscriptions.clone();
-                                let calls = calls.clone();
-
-                                match server.connect().await {
-                                    Ok(()) => {
-                                        log::info!("Client connected via NamedPipe: {PIPE_PATH}");
-                                        tokio::spawn(spawn_client(server, objects, clients, subs, calls));
-                                    }
-                                    Err(e) => {
-                                        log::error!("NamedPipe connection failed: {e}");
-                                        tokio::time::sleep(Duration::from_millis(200)).await;
-                                    }
+                            match server.connect().await {
+                                Ok(()) => {
+                                    log::info!("Client connected via NamedPipe: {PIPE_PATH}");
+                                    tokio::spawn(spawn_client(server, objects, clients, subs, calls));
+                                }
+                                Err(e) => {
+                                    log::error!("NamedPipe connection failed: {e}");
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
                                 }
                             }
-                            Err(e) => {
-                                log::error!("Pipe creation failed: {e}");
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                            }
                         }
-                    } => {}
-                }
+                        Err(e) => {
+                            log::error!("Pipe creation failed: {e}");
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                        }
+                    }
+                } => {}
             }
-        })
-    };
+        }
+    });
+
     Ok(handle)
 }
 
