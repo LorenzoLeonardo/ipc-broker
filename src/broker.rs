@@ -598,7 +598,7 @@ impl ServerState {
         let caller_tx = match caller_tx_opt {
             Some(tx) => tx,
             None => {
-                let message = format!("Caller disconnected");
+                let message = "Caller disconnected".to_string();
                 Self::send_to_client(
                     &self.clients,
                     client_id,
