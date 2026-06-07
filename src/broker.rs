@@ -1095,7 +1095,13 @@ impl SharedObject for ListObjects {
                 let objs = self.objects.lock().await;
                 let entries: Vec<String> = objs.keys().cloned().collect();
 
-                serde_json::to_value(entries).unwrap_or(Value::Null)
+                match serde_json::to_value(entries) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!("[Broker] Failed to serialize listObjects response: {e}");
+                        Value::Null
+                    }
+                }
             }
             _ => Value::Null,
         }

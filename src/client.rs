@@ -285,13 +285,19 @@ impl IPCClient {
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))?;
 
-        // Wait for reply
-        let resp = resp_rx.await.unwrap_or_else(|_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                "Actor task ended",
-            ))
-        })?;
+        // Wait for reply. If the oneshot channel is closed, log the underlying
+        // error and return a `ConnectionAborted` I/O error rather than silently
+        // hiding the cause.
+        let resp = match resp_rx.await {
+            Ok(res) => res,
+            Err(e) => {
+                log::error!("Actor response channel closed: {e}");
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    format!("Actor task ended: {e}"),
+                ));
+            }
+        }?;
 
         // Match the RpcResponse
         match resp {
@@ -414,13 +420,19 @@ impl IPCClient {
             .await
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Actor dropped"))?;
 
-        // Wait for reply
-        match resp_rx.await.unwrap_or_else(|_| {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::ConnectionAborted,
-                "Actor task ended",
-            ))
-        })? {
+        // Wait for reply. If the oneshot channel is closed, log the underlying
+        // error and return a `ConnectionAborted` I/O error rather than silently
+        // hiding the cause.
+        match match resp_rx.await {
+            Ok(res) => res,
+            Err(e) => {
+                log::error!("Actor response channel closed: {e}");
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionAborted,
+                    format!("Actor task ended: {e}"),
+                ));
+            }
+        }? {
             RpcResponse::HasObjectResult { exists, .. } => Ok(exists),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
