@@ -28,6 +28,8 @@ use uuid::Uuid;
 
 #[cfg(unix)]
 use crate::activate::{self, ServiceEntry, ServiceState, SharedServices};
+#[cfg(unix)]
+use std::os::unix::fs::FileTypeExt;
 // RPC protocol types
 use crate::rpc::TCP_ADDR;
 use crate::rpc::{BUF_SIZE, CallId, ClientId, RpcRequest, RpcResponse};
@@ -886,8 +888,29 @@ async fn start_unix_listener(
 
     use crate::rpc::UNIX_PATH;
 
-    let _ = std::fs::remove_file(UNIX_PATH); // cleanup old
+    // Cleanup old socket file if and only if it appears to be a UNIX socket.
+    // Avoid blindly removing files (symlink/toctou attacks or accidental files).
+    match std::fs::symlink_metadata(UNIX_PATH) {
+        Ok(meta) => {
+            let ft = meta.file_type();
+            if ft.is_socket() {
+                if let Err(e) = std::fs::remove_file(UNIX_PATH) {
+                    log::warn!("Failed to remove stale socket {UNIX_PATH}: {e}");
+                } else {
+                    log::info!("Removed stale unix socket {UNIX_PATH}");
+                }
+            } else if ft.is_symlink() {
+                log::warn!("Refusing to remove symlink at {UNIX_PATH}");
+            } else {
+                log::warn!("Refusing to remove non-socket file at {UNIX_PATH}");
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("Failed to stat {UNIX_PATH}: {e}"),
+    }
+
     let unix_listener = UnixListener::bind(UNIX_PATH)?;
+
     log::info!("Broker listening on Unix {UNIX_PATH}");
 
     let handle = tokio::spawn(async move {
